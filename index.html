@@ -8,6 +8,12 @@
   <!-- Tailwind via CDN — keeps the build step zero. -->
   <script src="https://cdn.tailwindcss.com"></script>
 
+  <!-- Type pairing: Space Grotesk (headings — technical, geometric, reads as
+       infrastructure rather than generic SaaS) + JetBrains Mono (data, model
+       badges, quota numbers — anything that's a value rather than prose). -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
   <!--
     Theme config.
     • darkMode 'class' — we toggle the `dark` class on <html> from settings.
@@ -26,6 +32,10 @@
               600: 'rgb(var(--brand-600) / <alpha-value>)',
               700: 'rgb(var(--brand-700) / <alpha-value>)'
             }
+          },
+          fontFamily: {
+            display: ['"Space Grotesk"', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace']
           }
         }
       }
@@ -46,9 +56,36 @@
     .tool-card:hover { transform: translateY(-2px); }
     .tab-btn { transition: background-color .15s ease, color .15s ease; }
     .result-box img { max-width: 100%; border-radius: .75rem; }
+
+    /* Visible keyboard focus everywhere, not just the browser default. */
+    a:focus-visible, button:focus-visible, input:focus-visible,
+    select:focus-visible, [tabindex]:focus-visible {
+      outline: 2px solid rgb(var(--brand-500));
+      outline-offset: 2px;
+    }
+
+    /* Signature element: a live status pulse on the node mark — this is a
+       "node" product, so the one piece of motion in the whole page is the
+       thing that says the node is actually alive, not decoration. */
+    .node-pulse {
+      position: absolute; top: -2px; right: -2px;
+      width: 9px; height: 9px; border-radius: 999px;
+      background: #34d399; box-shadow: 0 0 0 2px rgb(var(--brand-600));
+    }
+    .node-pulse::after {
+      content: ''; position: absolute; inset: 0; border-radius: 999px;
+      background: #34d399; animation: node-ping 2.2s ease-out infinite;
+    }
+    @keyframes node-ping {
+      0%   { transform: scale(1);   opacity: .7; }
+      100% { transform: scale(2.4); opacity: 0;  }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .node-pulse::after { animation: none; }
+    }
   </style>
 </head>
-<body class="bg-slate-50 text-slate-800 dark:bg-slate-900 dark:text-slate-200 min-h-screen flex flex-col justify-between">
+<body class="bg-slate-50 text-slate-800 dark:bg-slate-900 dark:text-slate-200 min-h-screen flex flex-col justify-between font-sans">
 
   <!-- ============================================================ -->
   <!-- Auth view (sign in / register)                                -->
@@ -56,15 +93,18 @@
   <div id="auth-view" class="min-h-screen flex flex-col items-center justify-center p-4">
     <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700 max-w-sm w-full p-6">
       <div class="flex items-center justify-center gap-3 mb-6">
-        <div class="w-10 h-10 rounded-lg bg-brand-600 text-white grid place-items-center font-bold text-lg">C</div>
+        <div class="relative w-10 h-10 rounded-lg bg-brand-600 text-white grid place-items-center font-display font-bold text-lg">
+          C
+          <span class="node-pulse" aria-hidden="true"></span>
+        </div>
         <div>
-          <h1 class="text-xl font-bold leading-tight">Canton Node</h1>
+          <h1 class="text-xl font-display font-bold leading-tight">Canton Node</h1>
           <p class="text-xs text-slate-500 dark:text-slate-400 leading-tight">Private multi-tool generative hub</p>
         </div>
       </div>
 
       <div class="mb-4 text-center">
-        <h2 id="auth-title" class="text-base font-semibold">Sign In</h2>
+        <h2 id="auth-title" class="text-base font-display font-semibold">Sign In</h2>
         <p class="text-xs text-slate-500 dark:text-slate-400">Authenticate to access your workspace</p>
       </div>
 
@@ -118,9 +158,12 @@
       <div class="max-w-6xl mx-auto px-4 py-3 grid grid-cols-[1fr_auto_1fr] items-center gap-4">
 
         <div class="flex items-center gap-3 justify-self-start">
-          <div class="w-8 h-8 rounded-lg bg-brand-600 text-white grid place-items-center font-bold text-sm">C</div>
+          <div class="relative w-8 h-8 rounded-lg bg-brand-600 text-white grid place-items-center font-display font-bold text-sm">
+            C
+            <span class="node-pulse" style="width:7px;height:7px;" aria-hidden="true"></span>
+          </div>
           <div class="hidden sm:block">
-            <h1 class="text-sm font-semibold leading-tight">Canton Node</h1>
+            <h1 class="text-sm font-display font-semibold leading-tight">Canton Node</h1>
             <p class="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">Private multi-tool hub</p>
           </div>
         </div>
@@ -149,71 +192,43 @@
       <div id="tab-content-models" class="tab-content space-y-8">
 
         <!-- Master Agent panel -->
-        <section class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
-          <!-- Header -->
-          <div class="px-5 pt-5 pb-3 flex items-center justify-between border-b border-slate-100 dark:border-slate-700/60">
+        <section class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-5">
+          <div class="flex items-center justify-between mb-3">
             <div>
-              <h2 class="text-base font-semibold tracking-tight">Master Agent</h2>
-              <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Describe what you want. Routes with <span class="font-medium text-brand-600 dark:text-brand-400">GPT-5.4</span>
-                → GPT-5 → Mistral → free OpenRouter models.
+              <h2 class="text-base font-display font-semibold">Master Agent</h2>
+              <p class="text-xs text-slate-500 dark:text-slate-400">
+                Describe what you want. Routed via <b>OpenRouter</b> — Free Models Router,
+                falling back to GPT-OSS 20B → Gemma 4 31B.
               </p>
             </div>
-            <span id="master-model-badge"
-                  class="text-[11px] px-2.5 py-1 rounded-full bg-brand-50 text-brand-700 dark:bg-slate-700 dark:text-slate-200 font-medium"
-                  title="Routing model used on the last request">
-              GPT-5.4 router
-            </span>
+            <span id="master-model-badge" class="text-xs font-mono px-2 py-1 rounded bg-brand-50 text-brand-700 dark:bg-slate-700 dark:text-slate-200"
+                  title="Routing model used on the last request">Free Models Router</span>
           </div>
-
-          <!-- Chat-style input area -->
-          <div class="p-4 sm:p-5">
-            <div class="relative rounded-2xl border border-slate-200 dark:border-slate-600 bg-slate-50/80 dark:bg-slate-900/60 shadow-sm focus-within:ring-2 focus-within:ring-brand-500/40 focus-within:border-brand-500 transition-shadow">
-              <!-- Textarea -->
-              <textarea id="master-input"
-                        rows="2"
-                        placeholder="Hello 👋  What would you like to create or do?"
-                        class="w-full resize-none bg-transparent border-0 outline-none focus:ring-0 text-sm text-slate-800 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 px-4 pt-3.5 pb-12 leading-relaxed"></textarea>
-
-              <!-- Bottom toolbar inside the bubble -->
-              <div class="absolute bottom-0 left-0 right-0 flex items-center justify-between px-3 pb-2.5">
-                <!-- Attachment -->
-                <button type="button" id="master-attach"
-                        class="p-2 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-slate-700 transition-colors"
-                        title="Attach file (coming soon)">
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                  </svg>
-                </button>
-
-                <!-- Send button -->
-                <button id="master-run"
-                        class="w-9 h-9 rounded-full bg-brand-600 hover:bg-brand-700 text-white flex items-center justify-center shadow-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed active:scale-95"
-                        title="Send">
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-4.5 w-4.5" viewBox="0 0 20 20" fill="currentColor">
-                    <path fill-rule="evenodd" d="M10 17a.75.75 0 01-.75-.75V5.612L5.29 9.77a.75.75 0 01-1.08-1.04l5.25-5.5a.75.75 0 011.08 0l5.25 5.5a.75.75 0 11-1.08 1.04l-3.96-4.158V16.25A.75.75 0 0110 17z" clip-rule="evenodd" />
-                  </svg>
-                </button>
-              </div>
-            </div>
-
-            <!-- Result + execute -->
-            <div id="master-result"
-                 class="result-box mt-3 text-xs text-slate-600 dark:text-slate-300 hidden bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl p-3.5 font-mono whitespace-pre-wrap"></div>
-            <div id="master-actions" class="mt-2.5 hidden flex items-center gap-3">
-              <button id="master-execute"
-                      class="text-xs rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-1.5 font-medium transition-colors">
-                ▶ Execute on Prexzy
-              </button>
-              <span class="text-[11px] text-slate-400">runs the routed endpoint (consumes that agent’s quota)</span>
-            </div>
+          <div class="flex gap-2">
+            <input id="master-input"
+                   type="text"
+                   placeholder="e.g. Make a sunset image, then turn it into a short video…"
+                   class="flex-1 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
+            <button id="master-run"
+                    class="rounded-lg bg-brand-600 text-white px-4 py-2 text-sm font-medium hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed">
+              Run
+            </button>
+          </div>
+          <div id="master-result"
+               class="result-box mt-3 text-xs text-slate-600 dark:text-slate-300 hidden bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-3 font-mono whitespace-pre-wrap"></div>
+          <div id="master-actions" class="mt-2 hidden">
+            <button id="master-execute"
+                    class="text-xs rounded-lg bg-emerald-600 text-white px-3 py-1.5 font-medium hover:bg-emerald-700">
+              ▶ Execute on Prexzy
+            </button>
+            <span class="text-[11px] text-slate-400 ml-2">runs the routed endpoint via PrexzyAPI (consumes that agent's quota)</span>
           </div>
         </section>
 
         <!-- Specialist agents -->
         <section>
           <div class="flex items-center justify-between mb-3">
-            <h2 class="text-base font-semibold">Specialist agents</h2>
+            <h2 class="text-base font-display font-semibold">Specialist agents</h2>
             <span class="text-xs text-slate-500 dark:text-slate-400">Click a card to open the agent</span>
           </div>
           <div id="tool-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>
@@ -223,7 +238,7 @@
         <section id="agent-workspace" class="hidden bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-5">
           <div class="flex items-center justify-between mb-4">
             <div>
-              <h2 id="workspace-title" class="text-base font-semibold">Agent</h2>
+              <h2 id="workspace-title" class="text-base font-display font-semibold">Agent</h2>
               <p id="workspace-desc" class="text-xs text-slate-500 dark:text-slate-400"></p>
             </div>
             <button id="workspace-close"
@@ -240,12 +255,12 @@
         <section class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-5">
           <div class="flex items-center justify-between mb-4">
             <div>
-              <h2 class="text-base font-semibold">Today's Quota</h2>
+              <h2 class="text-base font-display font-semibold">Today's Quota</h2>
               <p class="text-xs text-slate-500 dark:text-slate-400">
                 Per-user daily limits. Refresh automatically at local midnight — no manual reset needed.
               </p>
             </div>
-            <span id="quota-date" class="text-xs text-slate-400"></span>
+            <span id="quota-date" class="text-xs font-mono text-slate-400"></span>
           </div>
           <div id="quota-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>
         </section>
@@ -254,7 +269,7 @@
       <!-- ======================= Tab: Settings ======================= -->
       <div id="tab-content-settings" class="tab-content hidden space-y-6">
         <section class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-5">
-          <h2 class="text-base font-semibold mb-1">User Customization</h2>
+          <h2 class="text-base font-display font-semibold mb-1">User Customization</h2>
           <p class="text-xs text-slate-500 dark:text-slate-400 mb-6">
             Stored per account on this device. Applied immediately on save.
           </p>
@@ -293,23 +308,12 @@
               <label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Default Code Language</label>
               <select id="set-code-lang"
                       class="w-full rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
-                <option value="" disabled selected>Select language…</option>
                 <option value="python">Python</option>
                 <option value="javascript">JavaScript / Node</option>
-                <option value="typescript">TypeScript</option>
                 <option value="java">Java</option>
                 <option value="c">C</option>
                 <option value="cpp">C++</option>
                 <option value="csharp">C#</option>
-                <option value="go">Go</option>
-                <option value="rust">Rust</option>
-                <option value="php">PHP</option>
-                <option value="ruby">Ruby</option>
-                <option value="swift">Swift</option>
-                <option value="kotlin">Kotlin</option>
-                <option value="sql">SQL</option>
-                <option value="bash">Bash / Shell</option>
-                <option value="html">HTML / CSS</option>
               </select>
             </div>
 
@@ -340,7 +344,7 @@
               <label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Master Routing Mode</label>
               <select id="set-routing-mode"
                       class="w-full rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
-                <option value="auto">Auto-route (GPT-5.4 router)</option>
+                <option value="auto">Auto-route (OpenRouter free chain)</option>
                 <option value="manual">Manual selection only</option>
               </select>
             </div>
@@ -370,7 +374,7 @@
     </main>
 
     <footer class="max-w-6xl mx-auto px-4 py-8 text-center text-xs text-slate-400">
-      Canton Node · private build · step 3 (master router on Prexzy GPT-5.4)
+      Canton Node · private build · step 3 (master router on OpenRouter free models)
     </footer>
   </div>
 
@@ -504,16 +508,7 @@
         document.getElementById('set-compact-cards').checked = s.compactCards;
       }
       switchTab('models');
-
-      // Allow Enter to submit, Shift+Enter for newline (master-input is now a <textarea>)
-      document.getElementById('master-input')?.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-          e.preventDefault();
-          document.getElementById('master-run')?.click();
-        }
-      });
     });
   </script>
-<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v4513226cdae34746b4dedf0b4dfa099e1781791509496" integrity="sha512-ZE9pZaUXND66v380QUtch/5sE9tPFh2zg45pR2PB0CVkCtOREv2AJKkSidISWkysEuQ0EH8faUU5du78bx87UQ==" data-cf-beacon='{"version":"2024.11.0","token":"4edd5f8ec12a48cfa682ab8261b80a79"}' crossorigin="anonymous"></script>
 </body>
 </html>

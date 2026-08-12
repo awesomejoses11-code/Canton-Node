@@ -20,6 +20,24 @@
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const MODEL = 'claude-haiku-4-5-20251001'; // fast + cheap — this is a classification task, not a chat
 
+/* -------------------------------------------------------------------------
+ * Key rotation — round-robin across ANTHROPIC_API_KEY_1 / _2.
+ * `keyIndex` is module-scope state, so it persists across warm invocations
+ * on the same lambda instance (Vercel) and gives a true alternating pattern
+ * under sustained traffic. On a cold start it inits from Date.now() parity
+ * instead of always starting at key 1, so concurrent cold starts don't all
+ * hammer the same key.
+ * ------------------------------------------------------------------------- */
+const keys = [process.env.ANTHROPIC_API_KEY_1, process.env.ANTHROPIC_API_KEY_2].filter(Boolean);
+let keyIndex = Date.now() % 2;
+
+function nextApiKey() {
+  if (keys.length === 0) return null;
+  const key = keys[keyIndex % keys.length];
+  keyIndex = (keyIndex + 1) % keys.length;
+  return key;
+}
+
 // Mirrors tools.json ids, kept here so we can validate the model's pick
 // server-side without re-parsing tools.json at request time.
 const AGENT_IDS = [
@@ -84,9 +102,9 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = nextApiKey();
   if (!apiKey) {
-    res.status(500).json({ error: 'ANTHROPIC_API_KEY is not set on the server.' });
+    res.status(500).json({ error: 'Neither ANTHROPIC_API_KEY_1 nor ANTHROPIC_API_KEY_2 is set on the server.' });
     return;
   }
 
@@ -108,59 +126,72 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  let anthropicResp;
-  try {
-    anthropicResp = await fetch(ANTHROPIC_URL, {
+  const requestBody = JSON.stringify({
+    model: MODEL,
+    max_tokens: 500,
+    system: SYSTEM_PROMPT,
+    messages: [{ role: 'user', content: message }],
+    tools: [{
+      name: 'route_request',
+      description: 'Route the user request to the correct agent + endpoint with extracted params.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          agent_id: { type: 'string', enum: AGENT_IDS },
+          endpoint: { type: 'string', description: 'One endpoint key from the catalog, e.g. "image.txt2img".' },
+          params: {
+            type: 'object',
+            description: 'Only the fields the chosen endpoint needs.',
+            properties: {
+              prompt: { type: 'string' },
+              text: { type: 'string' },
+              code: { type: 'string' },
+              from: { type: 'string' },
+              voice: { type: 'string' },
+              size: { type: 'string' },
+              steps: { type: 'string' },
+              style: { type: 'string' },
+              image: { type: 'string' },
+              lyrics: { type: 'string' },
+              title: { type: 'string' },
+              html: { type: 'string' },
+              width: { type: 'string' },
+              height: { type: 'string' },
+              stdin: { type: 'string' },
+              web: { type: 'boolean' }
+            },
+            additionalProperties: false
+          },
+          reasoning: { type: 'string' }
+        },
+        required: ['agent_id', 'endpoint', 'params', 'reasoning']
+      }
+    }],
+    tool_choice: { type: 'tool', name: 'route_request' }
+  });
+
+  async function callAnthropic(withKey) {
+    return fetch(ANTHROPIC_URL, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-api-key': apiKey,
+        'x-api-key': withKey,
         'anthropic-version': '2023-06-01'
       },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 500,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: message }],
-        tools: [{
-          name: 'route_request',
-          description: 'Route the user request to the correct agent + endpoint with extracted params.',
-          input_schema: {
-            type: 'object',
-            properties: {
-              agent_id: { type: 'string', enum: AGENT_IDS },
-              endpoint: { type: 'string', description: 'One endpoint key from the catalog, e.g. "image.txt2img".' },
-              params: {
-                type: 'object',
-                description: 'Only the fields the chosen endpoint needs.',
-                properties: {
-                  prompt: { type: 'string' },
-                  text: { type: 'string' },
-                  code: { type: 'string' },
-                  from: { type: 'string' },
-                  voice: { type: 'string' },
-                  size: { type: 'string' },
-                  steps: { type: 'string' },
-                  style: { type: 'string' },
-                  image: { type: 'string' },
-                  lyrics: { type: 'string' },
-                  title: { type: 'string' },
-                  html: { type: 'string' },
-                  width: { type: 'string' },
-                  height: { type: 'string' },
-                  stdin: { type: 'string' },
-                  web: { type: 'boolean' }
-                },
-                additionalProperties: false
-              },
-              reasoning: { type: 'string' }
-            },
-            required: ['agent_id', 'endpoint', 'params', 'reasoning']
-          }
-        }],
-        tool_choice: { type: 'tool', name: 'route_request' }
-      })
+      body: requestBody
     });
+  }
+
+  let anthropicResp;
+  try {
+    anthropicResp = await callAnthropic(apiKey);
+    // If the current key is rate-limited/invalid and we have a second key, retry once with it.
+    if (!anthropicResp.ok && (anthropicResp.status === 429 || anthropicResp.status === 401) && keys.length > 1) {
+      const otherKey = keys.find(k => k !== apiKey) || nextApiKey();
+      if (otherKey && otherKey !== apiKey) {
+        anthropicResp = await callAnthropic(otherKey);
+      }
+    }
   } catch (e) {
     res.status(502).json({ error: 'Failed to reach Anthropic API: ' + e.message });
     return;

@@ -14,9 +14,21 @@
   'use strict';
 
   let lastRoute = null; // last routing decision, used by "Execute on Prexzy"
+  let attachedFile = null; // File object from the composer's attach button
 
   // Features that trigger the "confirm before heavy calls" setting.
   const HEAVY_FEATURES = new Set(['image', 'music', 'video']);
+
+  function clearAttachment() {
+    attachedFile = null;
+    document.getElementById('master-file-input').value = '';
+    document.getElementById('master-attachment').classList.add('hidden');
+  }
+
+  function autoGrow(textarea) {
+    textarea.style.height = 'auto';
+    textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
+  }
 
   async function runMasterAgent() {
     const input     = document.getElementById('master-input');
@@ -53,7 +65,10 @@
       const res = await fetch('/api/master', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ message })
+        body: JSON.stringify({
+          message,
+          attachment: attachedFile ? { name: attachedFile.name, type: attachedFile.type } : null
+        })
       });
       const data = await res.json();
 
@@ -65,12 +80,17 @@
 
       lastRoute = data;
       badge.textContent = (data.model_used || 'router') + (data.fallback_used ? ' (fallback)' : '');
-      show(resultBox,
+      let text =
         'agent: '     + data.agent_id + '\n' +
         'endpoint: '  + data.endpoint + '\n' +
         'params: '    + JSON.stringify(data.params, null, 2) + '\n' +
         'reasoning: ' + data.reasoning +
-        (data.fallback_note ? '\n\n⚠ ' + data.fallback_note : ''));
+        (data.fallback_note ? '\n\n⚠ ' + data.fallback_note : '');
+      if (attachedFile) {
+        text += '\n\n📎 "' + attachedFile.name + '" attached, but no wired endpoint accepts image input yet — it won\'t be sent to Prexzy.';
+        clearAttachment();
+      }
+      show(resultBox, text);
 
       // Only offer execution when the routed endpoint exists in the wrapper.
       actions.classList.toggle('hidden', !PrexzyAPI.describe(data.endpoint));
@@ -96,7 +116,7 @@
 
     show(resultBox, 'Executing ' + lastRoute.endpoint + ' on Prexzy…');
     try {
-      const data = await PrexzyAPI.call(lastRoute.endpoint, lastRoute.params);
+      const data = await PrexzyAPI.callResilient(lastRoute.endpoint, lastRoute.params);
       renderExecutionResult(resultBox, data);
     } catch (e) {
       show(resultBox, (e.kind ? '[' + e.kind + '] ' : '') + e.message);
@@ -204,10 +224,32 @@
   }
 
   document.addEventListener('DOMContentLoaded', () => {
+    const textarea   = document.getElementById('master-input');
+    const attachBtn   = document.getElementById('master-attach');
+    const fileInput   = document.getElementById('master-file-input');
+    const attachChip  = document.getElementById('master-attachment');
+    const attachName  = document.getElementById('master-attachment-name');
+    const removeBtn   = document.getElementById('master-attachment-remove');
+
     document.getElementById('master-run').addEventListener('click', runMasterAgent);
-    document.getElementById('master-input').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') runMasterAgent();
+    textarea.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        runMasterAgent();
+      }
     });
+    textarea.addEventListener('input', () => autoGrow(textarea));
+
+    attachBtn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      attachedFile = file;
+      attachName.textContent = file.name;
+      attachChip.classList.remove('hidden');
+    });
+    removeBtn.addEventListener('click', clearAttachment);
+
     document.getElementById('master-execute').addEventListener('click', executeRoute);
   });
 

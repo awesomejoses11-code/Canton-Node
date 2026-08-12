@@ -255,6 +255,23 @@
     'code.convert.php':    convertEndpoint('/tools/tophp')
   };
 
+  // ---- Fallback chains ------------------------------------------------
+  //
+  // Endpoints that are functionally interchangeable — same feature bucket,
+  // same param shape. If the caller's chosen one fails with a retryable
+  // error, PrexzyAPI.callResilient() tries the next one automatically
+  // instead of surfacing the failure (e.g. the 400s from /ai/askgpt5).
+  const FALLBACK_CHAINS = {
+    'chat.chatex':    ['chat.chatex', 'chat.askgpt5', 'chat.mistral', 'chat.writer'],
+    'chat.askgpt5':   ['chat.askgpt5', 'chat.chatex', 'chat.mistral', 'chat.writer'],
+    'chat.mistral':   ['chat.mistral', 'chat.chatex', 'chat.askgpt5', 'chat.writer'],
+    'chat.writer':    ['chat.writer', 'chat.chatex', 'chat.askgpt5', 'chat.mistral'],
+    'image.txt2img':  ['image.txt2img', 'image.genimage', 'image.aiwriter', 'image.dalle'],
+    'image.genimage': ['image.genimage', 'image.txt2img', 'image.aiwriter', 'image.dalle'],
+    'image.aiwriter': ['image.aiwriter', 'image.txt2img', 'image.genimage', 'image.dalle'],
+    'image.dalle':    ['image.dalle', 'image.txt2img', 'image.genimage', 'image.aiwriter']
+  };
+
   // --- Helpers to build repetitive endpoint entries ------------------------
   function compileEndpoint(path) {
     return {
@@ -410,6 +427,36 @@
         }
         await new Promise(r => setTimeout(r, interval));
       }
+    },
+
+    /**
+     * Like call(), but if `key` has known interchangeable alternatives
+     * (see FALLBACK_CHAINS) and the request fails with a retryable error
+     * — http, network, or parse — it tries the next one in the chain
+     * instead of surfacing the failure. A 'quota' error aborts immediately:
+     * chain members share the same quota bucket, so retrying would just
+     * fail the same way.
+     *
+     * On total failure, throws the last error with `.extra.attempts`
+     * listing every endpoint key tried and why each one failed.
+     */
+    async callResilient(key, params, opts) {
+      const chain = FALLBACK_CHAINS[key] || [key];
+      const attempts = [];
+      let lastErr = null;
+
+      for (const candidate of chain) {
+        try {
+          return await PrexzyAPI.call(candidate, params, opts);
+        } catch (e) {
+          attempts.push({ key: candidate, kind: e.kind, message: e.message });
+          lastErr = e;
+          if (e.kind === 'quota') break;
+        }
+      }
+
+      if (lastErr) lastErr.extra = Object.assign({}, lastErr.extra, { attempts });
+      throw lastErr || new PrexzyError('unknown', `No endpoint available for: ${key}`);
     },
 
     PrexzyError

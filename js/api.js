@@ -37,6 +37,22 @@
   const ENDPOINTS = {
 
     // ---------------- Text / chat -----------------------------------------
+    // Chatex fronts GPT-5.4 — the most capable chat model on Prexzy.
+    // It is the Master Agent's router model (consumed under the `master`
+    // quota bucket there) and is also available to the chat/web agents.
+    'chat.chatex': {
+      path: '/ai/chatex',
+      method: 'GET',
+      feature: 'text',
+      build: (p) => ({
+        url: qs('/ai/chatex', {
+          q: p.prompt,
+          model: p.model || undefined,
+          websearch: p.web ? 'true' : undefined
+        }),
+        init: { method: 'GET' }
+      })
+    },
     'chat.askgpt5': {
       path: '/ai/askgpt5',
       method: 'GET',
@@ -206,13 +222,22 @@
     // let the actual endpoint be swapped once we've picked the best one
     // during private testing.
     'tts.default': {
-      path: '/ai/olabiba', // placeholder; will refine during TTS step
+      // Real Prexzy TTS family: /tts/<voice>. Voice comes from the caller,
+      // falling back to the user's saved default (Settings) then 'olivia'.
+      path: '/tts/olivia', // resolved dynamically in build()
       method: 'GET',
       feature: 'tts',
-      build: (p) => ({
-        url: qs('/ai/olabiba', { text: p.text, voice: p.voice || undefined }),
-        init: { method: 'GET' }
-      })
+      build: (p) => {
+        const voice = String(
+          p.voice ||
+          (global.Settings ? Settings.load((global.Auth && Auth.current() || {}).email).ttsVoice : '') ||
+          'olivia'
+        ).toLowerCase();
+        return {
+          url: qs('/tts/' + encodeURIComponent(voice), { text: p.text }),
+          init: { method: 'GET' }
+        };
+      }
     },
 
     // ---------------- Code compile / convert ------------------------------

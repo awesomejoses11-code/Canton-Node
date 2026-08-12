@@ -60,7 +60,7 @@
       "id": "web",
       "title": "Web / Internet Agent",
       "feature": "web",
-      "endpoints": ["chat.askgpt5", "chat.mistral"],
+      "endpoints": ["chat.chatex", "chat.askgpt5", "chat.mistral"],
       "x402": "report-only",
       "keywords": ["web", "search", "browse", "internet", "look up", "x402"]
     },
@@ -68,7 +68,7 @@
       "id": "chat",
       "title": "AI Chat / Writer",
       "feature": "text",
-      "endpoints": ["chat.askgpt5", "chat.mistral", "chat.writer", "chat.summarize"],
+      "endpoints": ["chat.chatex", "chat.askgpt5", "chat.mistral", "chat.writer", "chat.summarize"],
       "keywords": ["chat", "write", "summarize", "explain", "rewrite"]
     }
   ]

@@ -253,7 +253,17 @@ async function callOpenRouter(apiKey, modelCfg, message) {
       }
     }],
     // 'auto', not a forced/named choice — see note on ROUTER_MODELS above.
-    tool_choice: 'auto'
+    tool_choice: 'auto',
+    // Second, independent constraint layer: OpenRouter's structured-outputs
+    // mode (mirrors Anthropic's output_config.format / json_schema —
+    // constrained decoding, not a "please return JSON" instruction). Doesn't
+    // depend on tool-calling support, so a model that rejects forced
+    // tool_choice can still honor this. Unsupported params are ignored per
+    // OpenRouter's docs, so it's safe to send to every model in the chain.
+    response_format: {
+      type: 'json_schema',
+      json_schema: { name: 'route_request', strict: true, schema: ROUTE_SCHEMA }
+    }
   };
 
   const resp = await fetch(OPENROUTER_URL, {

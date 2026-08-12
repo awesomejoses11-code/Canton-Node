@@ -42,10 +42,17 @@ const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
  * (Gemma's tool-calling support on OpenRouter isn't confirmed) — instead
  * rely on the plain-JSON instruction in SYSTEM_PROMPT and parse defensively.
  * ------------------------------------------------------------------------- */
+// NOTE: tool_choice is always 'auto', never a forced/named choice. Several
+// free-tier providers behind OpenRouter reject forced tool_choice with
+// "inference-enforced tool_choice (required/named) is not supported" —
+// forcing a specific function needs guided-generation support most free
+// backends don't implement. 'auto' lets the model call it voluntarily; the
+// SYSTEM_PROMPT instructs it to, and we still parse plain-text JSON as a
+// fallback for whichever model ignores that instruction.
 const ROUTER_MODELS = [
-  { model: 'openrouter/free',          label: 'Free Models Router', useTools: true  },
-  { model: 'openai/gpt-oss-20b:free',  label: 'GPT-OSS 20B',        useTools: true  },
-  { model: 'google/gemma-4-31b-it:free', label: 'Gemma 4 31B',      useTools: false }
+  { model: 'openrouter/free',            label: 'Free Models Router' },
+  { model: 'openai/gpt-oss-20b:free',    label: 'GPT-OSS 20B'        },
+  { model: 'google/gemma-4-31b-it:free', label: 'Gemma 4 31B'        }
 ];
 
 // Mirrors tools.json ids, kept here so we can validate the model's pick
@@ -181,7 +188,13 @@ module.exports = async function handler(req, res) {
         fallbackUsed = m !== ROUTER_MODELS[0];
         break;
       }
-      errors.push(m.label + ': unparseable or invalid routing JSON');
+      if (!parsed) {
+        errors.push(m.label + ': no JSON found in model output');
+      } else if (!AGENT_IDS.includes(parsed.agent_id)) {
+        errors.push(m.label + ': invalid agent_id "' + parsed.agent_id + '"');
+      } else {
+        errors.push(m.label + ': invalid endpoint "' + parsed.endpoint + '"');
+      }
     } catch (e) {
       errors.push(m.label + ': ' + e.message);
     }
@@ -230,20 +243,18 @@ async function callOpenRouter(apiKey, modelCfg, message) {
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: message }
     ],
-    max_tokens: 500
-  };
-
-  if (modelCfg.useTools) {
-    body.tools = [{
+    max_tokens: 500,
+    tools: [{
       type: 'function',
       function: {
         name: 'route_request',
         description: 'Route the user request to the correct agent + endpoint with extracted params.',
         parameters: ROUTE_SCHEMA
       }
-    }];
-    body.tool_choice = { type: 'function', function: { name: 'route_request' } };
-  }
+    }],
+    // 'auto', not a forced/named choice — see note on ROUTER_MODELS above.
+    tool_choice: 'auto'
+  };
 
   const resp = await fetch(OPENROUTER_URL, {
     method: 'POST',
@@ -275,7 +286,11 @@ async function callOpenRouter(apiKey, modelCfg, message) {
   }
 
   // Path 2: model answered in plain text — extract JSON defensively.
-  return extractRouteJson(msg.content);
+  const extracted = extractRouteJson(msg.content);
+  if (extracted) return extracted;
+
+  const snippet = (msg.content || '(empty response)').slice(0, 200);
+  throw new Error('no tool call and no parseable JSON — raw: ' + snippet);
 }
 
 function extractRouteJson(raw) {

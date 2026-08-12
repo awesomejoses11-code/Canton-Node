@@ -103,28 +103,99 @@
     }
   }
 
+  // Field names that commonly carry a media URL across different Prexzy
+  // endpoints — same detection idea as the downloader tool, adapted for the
+  // flat JSON objects Prexzy actually returns (no nested `type`/`url` pairs).
+  const MEDIA_FIELDS = {
+    image: ['image_url', 'img_url', 'imageUrl', 'photo_url'],
+    video: ['video_url', 'videoUrl'],
+    audio: ['audio_url', 'audioUrl', 'voice_url', 'tts_url']
+  };
+
+  function findMediaUrl(data) {
+    if (!data || typeof data !== 'object') return null;
+    for (const [kind, fields] of Object.entries(MEDIA_FIELDS)) {
+      for (const f of fields) {
+        if (typeof data[f] === 'string' && /^https?:\/\//i.test(data[f])) {
+          return { kind, url: data[f] };
+        }
+      }
+    }
+    // Generic fallback for endpoints that use a field name we haven't
+    // listed above: any "*url"-named field pointing at an obvious media file.
+    for (const [key, val] of Object.entries(data)) {
+      if (typeof val !== 'string' || !/^https?:\/\//i.test(val)) continue;
+      if (!/url$/i.test(key)) continue;
+      if (/\.(png|jpe?g|gif|webp)(\?|$)/i.test(val)) return { kind: 'image', url: val };
+      if (/\.(mp4|webm|mov)(\?|$)/i.test(val))        return { kind: 'video', url: val };
+      if (/\.(mp3|wav|ogg|m4a)(\?|$)/i.test(val))     return { kind: 'audio', url: val };
+    }
+    return null;
+  }
+
+  // One plain-English line instead of the raw object, e.g.
+  // 'Generated image for: "a swimming fish"'.
+  function summarize(data, media) {
+    if (data.prompt) {
+      return media
+        ? `Generated ${media.kind} for: "${data.prompt}"`
+        : `Done — prompt: "${data.prompt}"`;
+    }
+    if (data.result || data.response || data.answer || data.message) {
+      return String(data.result || data.response || data.answer || data.message);
+    }
+    return media ? `Generated ${media.kind}.` : 'Request completed.';
+  }
+
   function renderExecutionResult(box, data) {
-    // Binary media (image/audio/video) → inline preview + download link.
+    // Pre-normalized binary shape, if PrexzyAPI.call ever returns one.
     if (data && data._binary) {
-      const tag = data.contentType.startsWith('image/') ? 'img'
-                : data.contentType.startsWith('audio/') ? 'audio' : 'video';
-      box.innerHTML = '';
-      const el = document.createElement(tag);
-      el.src = data.url;
-      if (tag !== 'img') el.controls = true;
-      el.className = 'max-w-full rounded-lg';
-      const link = document.createElement('a');
-      link.href = data.url;
-      link.download = 'prexzy-result';
-      link.className = 'block mt-2 text-brand-600 underline';
-      link.textContent = 'Download result';
-      box.append(el, link);
+      renderMedia(box, {
+        kind: data.contentType.startsWith('image/') ? 'image'
+            : data.contentType.startsWith('audio/') ? 'audio' : 'video',
+        url: data.url
+      }, data._text || 'Done.');
       return;
     }
-    // Text / JSON.
-    const text = (data && data._text) ? data.text
-      : (data && (data.result || data.response || data.answer)) || JSON.stringify(data, null, 2);
-    show(box, String(text));
+
+    // Raw Prexzy JSON — the shape most endpoints actually return today,
+    // e.g. { status, prompt, image_url, job_id }.
+    if (data && typeof data === 'object') {
+      const media = findMediaUrl(data);
+      if (media) {
+        renderMedia(box, media, summarize(data, media));
+        return;
+      }
+      if (data._text) { show(box, data._text); return; }
+      if (data.result || data.response || data.answer || data.message) {
+        show(box, summarize(data, null));
+        return;
+      }
+    }
+
+    // Nothing recognizable — show raw JSON, but labeled as a fallback
+    // rather than presented as if it were the intended output.
+    show(box, 'Unrecognized response shape — raw output:\n' + JSON.stringify(data, null, 2));
+  }
+
+  function renderMedia(box, media, caption) {
+    box.classList.remove('hidden');
+    box.innerHTML = '';
+    const captionEl = document.createElement('div');
+    captionEl.className = 'mb-2 text-slate-700 dark:text-slate-200';
+    captionEl.textContent = caption;
+    const el = document.createElement(media.kind === 'image' ? 'img' : media.kind === 'audio' ? 'audio' : 'video');
+    el.src = media.url;
+    if (media.kind !== 'image') el.controls = true;
+    el.className = 'max-w-full rounded-lg';
+    const link = document.createElement('a');
+    link.href = media.url;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.download = 'canton-node-result';
+    link.className = 'block mt-2 text-brand-600 dark:text-brand-500 underline text-xs';
+    link.textContent = '⬇ Download';
+    box.append(captionEl, el, link);
   }
 
   function show(el, text) {

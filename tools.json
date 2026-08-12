@@ -1,0 +1,75 @@
+{
+  "$comment": "Data-driven registry of specialist agents. The master agent (step 4) and skill loader (step 5) will use this to route natural-language requests. Kept intentionally small — we only wire up high-utility Prexzy endpoints.",
+  "tools": [
+    {
+      "id": "image",
+      "title": "Image Generation Agent",
+      "feature": "image",
+      "endpoints": ["image.txt2img", "image.genimage", "image.aiwriter", "image.dalle"],
+      "keywords": ["image", "picture", "photo", "art", "illustration", "draw"]
+    },
+    {
+      "id": "music",
+      "title": "Music Generation Agent",
+      "feature": "music",
+      "endpoints": ["music.aimelody", "music.text2music.create", "music.text2music.status"],
+      "keywords": ["music", "song", "melody", "audio", "beat", "track"]
+    },
+    {
+      "id": "video",
+      "title": "Video Generation Agent",
+      "feature": "video",
+      "endpoints": ["video.create", "video.status"],
+      "keywords": ["video", "clip", "movie", "animation"]
+    },
+    {
+      "id": "image2html",
+      "title": "Image → HTML Agent",
+      "feature": "image2html",
+      "endpoints": ["chat.askgpt5"],
+      "composed": true,
+      "keywords": ["image to html", "screenshot to code", "vision", "layout"]
+    },
+    {
+      "id": "html2image",
+      "title": "HTML → Image Agent",
+      "feature": "html2image",
+      "endpoints": ["html2image.direct", "html2image.json"],
+      "keywords": ["html to image", "render html", "screenshot", "meme card"]
+    },
+    {
+      "id": "tts",
+      "title": "TTS Agent",
+      "feature": "tts",
+      "endpoints": ["tts.default"],
+      "keywords": ["speak", "voice", "read aloud", "tts", "narration"]
+    },
+    {
+      "id": "code",
+      "title": "Code Agent",
+      "feature": "code",
+      "endpoints": [
+        "code.compile.python", "code.compile.js", "code.compile.java",
+        "code.compile.c", "code.compile.cpp", "code.compile.csharp",
+        "code.convert.python", "code.convert.js", "code.convert.java",
+        "code.convert.cpp", "code.convert.php"
+      ],
+      "keywords": ["code", "run", "compile", "convert", "translate code"]
+    },
+    {
+      "id": "web",
+      "title": "Web / Internet Agent",
+      "feature": "web",
+      "endpoints": ["chat.askgpt5", "chat.mistral"],
+      "x402": "report-only",
+      "keywords": ["web", "search", "browse", "internet", "look up", "x402"]
+    },
+    {
+      "id": "chat",
+      "title": "AI Chat / Writer",
+      "feature": "text",
+      "endpoints": ["chat.askgpt5", "chat.mistral", "chat.writer", "chat.summarize"],
+      "keywords": ["chat", "write", "summarize", "explain", "rewrite"]
+    }
+  ]
+}

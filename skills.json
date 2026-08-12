@@ -1,0 +1,4 @@
+{
+  "$comment": "Index of Senpi-style skills. Filled in during step 5 (skill loader). Each entry points at a SKILL.md file that carries YAML frontmatter + a natural-language description of what the skill does and which endpoints it uses.",
+  "skills": []
+}

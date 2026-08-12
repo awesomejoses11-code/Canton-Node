@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Prexzy Multi-Tool Platform</title>
+
+  <!-- Tailwind via CDN — keeps v1 simple, no build step. -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!--
+    Small inline theme config. Kept minimal on purpose so we can style
+    the platform via Tailwind utility classes rather than custom CSS.
+  -->
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50:  '#eef2ff',
+              500: '#6366f1',
+              600: '#4f46e5',
+              700: '#4338ca'
+            }
+          }
+        }
+      }
+    };
+  </script>
+
+  <style>
+    /* Tiny bit of custom CSS for things Tailwind CDN doesn't cover well. */
+    .quota-bar { transition: width .3s ease; }
+    .tool-card:hover { transform: translateY(-2px); }
+    .tool-card { transition: transform .15s ease, box-shadow .15s ease; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen">
+
+  <!-- ============================================================ -->
+  <!-- Header                                                       -->
+  <!-- ============================================================ -->
+  <header class="bg-white border-b border-slate-200">
+    <div class="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-lg bg-brand-600 text-white grid place-items-center font-bold">P</div>
+        <div>
+          <h1 class="text-lg font-semibold leading-tight">Prexzy Platform</h1>
+          <p class="text-xs text-slate-500 leading-tight">Private multi-tool generative hub</p>
+        </div>
+      </div>
+
+      <!-- Global reset button for local quotas (useful during private testing) -->
+      <button id="btn-reset-quota"
+              class="text-xs px-3 py-1.5 rounded-md border border-slate-300 hover:bg-slate-100">
+        Reset today's quota
+      </button>
+    </div>
+  </header>
+
+  <main class="max-w-6xl mx-auto px-4 py-6 space-y-8">
+
+    <!-- ============================================================ -->
+    <!-- Master Agent panel (placeholder for step 4)                  -->
+    <!-- ============================================================ -->
+    <section class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+      <div class="flex items-center justify-between mb-3">
+        <div>
+          <h2 class="text-base font-semibold">Master Agent</h2>
+          <p class="text-xs text-slate-500">Describe what you want. The master will pick the right specialist.</p>
+        </div>
+        <span class="text-xs px-2 py-1 rounded bg-slate-100 text-slate-500">coming in step 4</span>
+      </div>
+      <div class="flex gap-2">
+        <input id="master-input"
+               disabled
+               type="text"
+               placeholder="e.g. Make a sunset image, then turn it into a short video…"
+               class="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm bg-slate-50 text-slate-400" />
+        <button disabled
+                class="rounded-lg bg-brand-600 text-white px-4 py-2 text-sm font-medium opacity-50 cursor-not-allowed">
+          Run
+        </button>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- Quota dashboard                                              -->
+    <!-- ============================================================ -->
+    <section class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h2 class="text-base font-semibold">Today's quota</h2>
+          <p class="text-xs text-slate-500">
+            Client-side daily limits. Resets automatically at local midnight.
+          </p>
+        </div>
+        <span id="quota-date" class="text-xs text-slate-400"></span>
+      </div>
+      <div id="quota-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- Specialist agents (tool picker)                              -->
+    <!-- ============================================================ -->
+    <section>
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-base font-semibold">Specialist agents</h2>
+        <span class="text-xs text-slate-500">Click a card to open the agent</span>
+      </div>
+      <div id="tool-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- Active agent workspace (each specialist mounts here)         -->
+    <!-- ============================================================ -->
+    <section id="agent-workspace" class="hidden bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h2 id="workspace-title" class="text-base font-semibold">Agent</h2>
+          <p id="workspace-desc" class="text-xs text-slate-500"></p>
+        </div>
+        <button id="workspace-close"
+                class="text-xs px-3 py-1.5 rounded-md border border-slate-300 hover:bg-slate-100">
+          Close
+        </button>
+      </div>
+      <div id="workspace-body"></div>
+    </section>
+
+  </main>
+
+  <footer class="max-w-6xl mx-auto px-4 py-8 text-center text-xs text-slate-400">
+    Prexzy Multi-Tool Platform · private build
+  </footer>
+
+  <!-- ============================================================ -->
+  <!-- Scripts                                                       -->
+  <!-- Order matters: quota → api → (later) skill-loader → master.  -->
+  <!-- ============================================================ -->
+  <script src="js/quota.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/hub.js"></script>
+</body>
+</html>

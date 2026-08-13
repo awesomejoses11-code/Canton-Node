@@ -134,6 +134,44 @@
     }
     .markdown-body hr { border: none; border-top: 1px solid rgb(226 232 240); margin: 1em 0; }
     .dark .markdown-body hr { border-top-color: rgb(51 65 85); }
+
+    /* Canton logo mark used on the login / sign-up page */
+    .canton-logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-family: 'Segoe UI', Roboto, sans-serif;
+      font-weight: 700;
+      font-size: 24px;
+      color: #00D1FF;
+      letter-spacing: 1px;
+    }
+    .canton-logo .node-dot {
+      width: 14px;
+      height: 14px;
+      background: #00D1FF;
+      border-radius: 50%;
+      box-shadow: 0 0 10px #00D1FF, 0 0 20px #00D1FF;
+      position: relative;
+      flex-shrink: 0;
+    }
+    .canton-logo .node-dot::after {
+      content: '';
+      position: absolute;
+      width: 24px;
+      height: 24px;
+      border: 2px solid #00D1FF;
+      border-radius: 50%;
+      top: -7px;
+      left: -7px;
+      opacity: 0.4;
+    }
+    .canton-logo span {
+      color: #0f172a; /* readable on light auth card */
+    }
+    .dark .canton-logo span {
+      color: #fff;
+    }
   </style>
 </head>
 <body class="bg-slate-50 text-slate-800 dark:bg-slate-900 dark:text-slate-200 min-h-screen flex flex-col justify-between font-sans">
@@ -143,23 +181,12 @@
   <!-- ============================================================ -->
   <div id="auth-view" class="min-h-screen flex flex-col items-center justify-center p-4">
     <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700 max-w-sm w-full p-6">
-      <div class="flex items-center justify-center gap-3 mb-6">
-        <div class="relative w-10 h-10 rounded-lg bg-brand-600 text-white grid place-items-center">
-          <svg viewBox="0 0 24 24" class="w-[58%] h-[58%]" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
-            <line x1="12" y1="9.6" x2="12" y2="6.3"/>
-            <line x1="13.7" y1="13.5" x2="17.3" y2="15.6"/>
-            <line x1="10.3" y1="13.5" x2="6.7" y2="15.6"/>
-            <circle cx="12" cy="12" r="2.3" fill="currentColor" stroke="none"/>
-            <circle cx="12" cy="4.6" r="1.5" fill="currentColor" stroke="none"/>
-            <circle cx="18.7" cy="16.6" r="1.5" fill="currentColor" stroke="none"/>
-            <circle cx="5.3" cy="16.6" r="1.5" fill="currentColor" stroke="none"/>
-          </svg>
-          <span class="node-pulse" aria-hidden="true"></span>
+      <div class="flex flex-col items-center mb-6">
+        <div class="canton-logo" aria-label="Canton Node">
+          <div class="node-dot" aria-hidden="true"></div>
+          Canton <span>Node</span>
         </div>
-        <div>
-          <h1 class="text-xl font-display font-bold leading-tight">Canton Node</h1>
-          <p class="text-xs text-slate-500 dark:text-slate-400 leading-tight">Private multi-tool generative hub</p>
-        </div>
+        <p class="text-xs text-slate-500 dark:text-slate-400 leading-tight mt-2">Private multi-tool generative hub</p>
       </div>
 
       <div class="mb-4 text-center">
@@ -500,6 +527,7 @@
   <script src="js/history.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/16.3.0/lib/marked.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.4.11/purify.min.js"></script>
+  <script src="js/output-actions.js"></script>
   <script src="js/master-client.js"></script>
 
   <!-- Auth UI glue + tab switching -->

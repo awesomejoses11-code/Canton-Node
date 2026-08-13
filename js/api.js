@@ -13,6 +13,9 @@
  * Endpoint catalog is data-driven: see ENDPOINTS below and tools.json.
  * Only high-utility endpoints are wired up — per the spec, we do NOT try
  * to support all 466.
+ *
+ * Video: prefer PrexzyAPI.generateVideo(...) which hits /api/video
+ * (Prexzy → Pixazo LTX → Pyramid Flow) and handles loading + polling.
  * ========================================================================= */
 
 (function (global) {
@@ -343,6 +346,36 @@
     }
   }
 
+  // ---- Loading UI helper -------------------------------------------------
+  /**
+   * Shows a small spinner + message inside `el`. Returns a function that
+   * updates the message text, and another to clear it.
+   * Usage:
+   *   const { setMessage, clear } = PrexzyAPI.showLoading(box, 'Generating…');
+   *   setMessage('Still working…');
+   *   clear();
+   */
+  function showLoading(el, initialMessage) {
+    if (!el) return { setMessage: function () {}, clear: function () {} };
+    el.classList.remove('hidden');
+    el.innerHTML = '';
+    const wrap = document.createElement('div');
+    wrap.className = 'flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400 py-3';
+    wrap.innerHTML =
+      '<svg class="animate-spin h-4 w-4 text-brand-500 flex-shrink-0" viewBox="0 0 24 24" fill="none">' +
+      '<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>' +
+      '<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>' +
+      '</svg>';
+    const msg = document.createElement('span');
+    msg.textContent = initialMessage || 'Working…';
+    wrap.appendChild(msg);
+    el.appendChild(wrap);
+    return {
+      setMessage: function (t) { msg.textContent = t || ''; },
+      clear: function () { el.innerHTML = ''; }
+    };
+  }
+
   // ---- The public wrapper -------------------------------------------------
   const PrexzyAPI = {
 
@@ -355,6 +388,8 @@
       if (!e) return null;
       return { key, path: e.path, method: e.method, feature: e.feature };
     },
+
+    showLoading,
 
     /**
      * Call a Prexzy endpoint by key.
@@ -478,8 +513,135 @@
       throw lastErr || new PrexzyError('unknown', `No endpoint available for: ${key}`);
     },
 
+    /**
+     * High-level video generation with the server-side fallback chain
+     * (Prexzy → Pixazo LTX → Pyramid Flow).
+     *
+     * Consumes the `video` quota once. Shows loading UI if `loadingEl` is given.
+     *
+     *   const result = await PrexzyAPI.generateVideo(
+     *     { prompt: 'a cat running', duration: 5 },
+     *     { loadingEl: someDiv }
+     *   );
+     *   // result.url  — playable video URL when available
+     *   // result.source — 'prexzy' | 'pixazo-ltx' | 'pyramid-flow'
+     */
+    async generateVideo(params, opts) {
+      opts = opts || {};
+      const prompt = (params && params.prompt) || '';
+      if (!prompt) throw new PrexzyError('unknown', 'Missing prompt for video');
+
+      const c = global.Quota.consume('video');
+      if (!c.ok) {
+        throw new PrexzyError('quota',
+          'Daily limit reached for "video". Try again tomorrow.',
+          { feature: 'video' });
+      }
+
+      let loading = null;
+      if (opts.loadingEl) {
+        loading = showLoading(opts.loadingEl, 'Generating video… this can take 30–90 s');
+      }
+
+      let refunded = false;
+      const refundOnce = () => {
+        if (!refunded) {
+          global.Quota.refund('video');
+          refunded = true;
+        }
+      };
+
+      try {
+        const body = {
+          prompt,
+          duration: params.duration || 5,
+          resolution: params.resolution || '720p',
+          imageUrl: params.image || params.imageUrl || null,
+          style: params.style || undefined,
+          poll: opts.poll !== false
+        };
+
+        if (loading) loading.setMessage('Trying Prexzy → Pixazo → HF…');
+
+        const res = await fetch('/api/video', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: opts.signal
+        });
+
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          refundOnce();
+          throw new PrexzyError('http', data.error || ('HTTP ' + res.status), { status: res.status });
+        }
+
+        // If server returned a task_id without polling, optionally poll from client
+        if (data.task_id && !data.url && opts.poll !== false) {
+          if (loading) loading.setMessage('Rendering frames (Pixazo)…');
+          const finalUrl = await pollPixazoClient(data.task_id, {
+            onProgress: function (status) {
+              if (loading) loading.setMessage('Status: ' + status + '…');
+            },
+            signal: opts.signal
+          });
+          if (loading) loading.clear();
+          return { url: finalUrl, source: 'pixazo-ltx', task_id: data.task_id };
+        }
+
+        if (loading) loading.clear();
+        return data;
+      } catch (e) {
+        refundOnce();
+        if (loading) loading.clear();
+        if (e instanceof PrexzyError) throw e;
+        throw new PrexzyError('network', e.message || 'Video request failed');
+      }
+    },
+
     PrexzyError
   };
+
+  /**
+   * Client-side Pixazo poll via /api/video-status (key stays on server).
+   */
+  async function pollPixazoClient(taskId, opts) {
+    opts = opts || {};
+    const intervalMs = opts.intervalMs || 5000;
+    const timeoutMs  = opts.timeoutMs  || 4 * 60 * 1000;
+    const started = Date.now();
+
+    while (true) {
+      if (opts.signal && opts.signal.aborted) {
+        throw new PrexzyError('network', 'Polling aborted');
+      }
+      const res = await fetch('/api/video-status?task_id=' + encodeURIComponent(taskId), {
+        signal: opts.signal
+      });
+      if (!res.ok) {
+        const t = await res.text();
+        throw new PrexzyError('http', 'Status ' + res.status + ': ' + t.slice(0, 120));
+      }
+      const data = await res.json();
+      const status = String(data.status || '').toUpperCase();
+      if (opts.onProgress) opts.onProgress(status);
+
+      if (status === 'COMPLETED') {
+        const media = data.output && data.output.media_url;
+        const url = Array.isArray(media) ? media[0] : media;
+        if (!url) throw new PrexzyError('parse', 'Completed but no media_url');
+        return url;
+      }
+      if (status === 'FAILED' || status === 'ERROR') {
+        throw new PrexzyError('http', data.error || ('Pixazo ' + status));
+      }
+      if (Date.now() - started > timeoutMs) {
+        throw new PrexzyError('unknown', 'Video generation timed out');
+      }
+      await new Promise(function (r) { setTimeout(r, intervalMs); });
+    }
+  }
 
   async function safeText(resp) {
     try { return await resp.text(); } catch (_) { return ''; }
@@ -488,47 +650,22 @@
   // Expose globally.
   global.PrexzyAPI = PrexzyAPI;
 
-async function generateImageWithHF(prompt) {
-  const token = process.env.HF_TOKEN;          // already in your Vercel env
-  if (!token) throw new Error('HF_TOKEN not set');
-
-  const response = await fetch(
-    'https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell',
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ inputs: prompt })
-    }
-  );
-
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Hugging Face image failed: ${response.status} – ${err}`);
-  }
-
-  // Returns binary image
-  const blob = await response.blob();
-  return blob;
-}
-  
 })(window);
+
 /* ---------------------------------------------------------------
  * Simple event logger → /api/log
  * Never throws, never blocks the UI
  * --------------------------------------------------------------- */
-window.logEvent = async function logEvent(event, data = {}) {
+window.logEvent = async function logEvent(event, data) {
   try {
     const user = (window.Auth && Auth.current && Auth.current()) || null;
     await fetch('/api/log', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        event,
+        event: event,
         user: user ? user.email : null,
-        data
+        data: data || {}
       })
     });
   } catch (e) {

@@ -32,8 +32,9 @@
   //
   // Keys are STABLE identifiers used throughout the codebase.
   // If you ever rename one here, also rename it in tools.json / api.js.
+  // Master Agent is the orchestrator — limit set to 80 (confirmed 2026-08-13).
   const LIMITS = Object.freeze({
-    master:    100,   // Master Agent routing requests (Prexzy GPT-5.4 router)
+    master:     80,   // Master Agent routing requests
     text:       80,   // AI chat / writer / text
     tts:        50,   // Text-to-speech
     code:       50,   // Code compile / convert

@@ -78,7 +78,14 @@
 
   async function downloadMedia(url, filename, btn) {
     try {
-      const blob = await fetchAsBlob(url);
+      // blob: URLs are already local — skip the network round-trip.
+      let blob;
+      if (/^blob:/i.test(url)) {
+        const res = await fetch(url);
+        blob = await res.blob();
+      } else {
+        blob = await fetchAsBlob(url);
+      }
       triggerBlobDownload(blob, filename);
       flash(btn, '✓ Saved');
     } catch (e) {

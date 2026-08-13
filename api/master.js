@@ -501,6 +501,13 @@ async function callOpenRouterRoute(apiKey, modelCfg, message) {
     }
   };
 
+  const ROUTER_MODELS = [
+  "openrouter/free:online",
+  "openai/gpt-oss-20b:free:online",
+  "google/gemma-4-31b-it:free:online",
+  // keep any other models you want
+];
+  
   const resp = await fetch(OPENROUTER_URL, {
     method: 'POST',
     headers: {

@@ -46,6 +46,10 @@
  * "Execute on Prexzy" button scoped to that specific message — there's no
  * single global "last route" anymore since multiple routed turns can sit
  * in the same thread.
+ *
+ * Video: when the routed endpoint is video.create, Execute uses
+ * PrexzyAPI.generateVideo (Prexzy → Pixazo LTX → Pyramid Flow) with
+ * loading spinner instead of a plain callResilient.
  * ========================================================================= */
 
 (function () {
@@ -256,6 +260,8 @@
     const attachmentInfo = attachedFile ? { name: attachedFile.name, type: attachedFile.type } : null;
 
     try {
+      if (window.logEvent) window.logEvent('master_run', { prompt: message.slice(0, 100) });
+
       const res = await fetch('/api/master', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -312,7 +318,7 @@
         persistAssistantMessage(email, routeMsg);
 
         // Only offer execution when the routed endpoint exists in the wrapper.
-        if (PrexzyAPI.describe(data.endpoint)) {
+        if (PrexzyAPI.describe(data.endpoint) || data.agent_id === 'video') {
           appendExecuteAction(assistantBox, routeMsg, email);
         }
       }
@@ -383,23 +389,36 @@
     bubbleEl.appendChild(actions);
 
     btn.addEventListener('click', async () => {
-      const endpoint = PrexzyAPI.describe(routeMsg.meta.endpoint);
-      if (!endpoint) return;
+      const endpointKey = routeMsg.meta.endpoint;
+      const endpoint = PrexzyAPI.describe(endpointKey);
+      const isVideo = routeMsg.meta.agent_id === 'video' || (endpointKey && endpointKey.indexOf('video.') === 0);
 
       const settings = Settings.load(email);
-      if (settings.confirmHeavy && endpoint.feature && HEAVY_FEATURES.has(endpoint.feature)) {
-        const left = Quota.remaining(endpoint.feature);
-        if (!confirm(`This will use 1 ${endpoint.feature} call (${left} left today). Continue?`)) return;
+      const feature = isVideo ? 'video' : (endpoint && endpoint.feature);
+      if (settings.confirmHeavy && feature && HEAVY_FEATURES.has(feature)) {
+        const left = Quota.remaining(feature);
+        if (!confirm('This will use 1 ' + feature + ' call (' + left + ' left today). Continue?')) return;
       }
 
       const resultArea = document.createElement('div');
       resultArea.className = 'mt-2 font-sans';
       bubbleEl.appendChild(resultArea);
-      showPlain(resultArea, 'Executing ' + routeMsg.meta.endpoint + ' on Prexzy…');
 
       btn.disabled = true;
       try {
-        const data = await PrexzyAPI.callResilient(routeMsg.meta.endpoint, routeMsg.meta.params);
+        let data;
+        if (isVideo) {
+          // Use the full fallback chain + loading spinner
+          data = await PrexzyAPI.generateVideo(routeMsg.meta.params || {}, {
+            loadingEl: resultArea,
+            poll: true
+          });
+          // Normalize for renderExecutionResult / media finder
+          if (data && data.url && !data.video_url) data.video_url = data.url;
+        } else {
+          showPlain(resultArea, 'Executing ' + endpointKey + ' on Prexzy…');
+          data = await PrexzyAPI.callResilient(endpointKey, routeMsg.meta.params);
+        }
         renderExecutionResult(resultArea, data);
         routeMsg.meta.executed = true;
         routeMsg.meta.executionSummary = summarizeForStorage(resultArea);
@@ -417,7 +436,7 @@
   // flat JSON objects Prexzy actually returns (no nested `type`/`url` pairs).
   const MEDIA_FIELDS = {
     image: ['image_url', 'img_url', 'imageUrl', 'photo_url'],
-    video: ['video_url', 'videoUrl'],
+    video: ['video_url', 'videoUrl', 'url'],
     audio: ['audio_url', 'audioUrl', 'voice_url', 'tts_url']
   };
 
@@ -449,6 +468,9 @@
       return media
         ? `Generated ${media.kind} for: "${data.prompt}"`
         : `Done — prompt: "${data.prompt}"`;
+    }
+    if (data.source && media) {
+      return `Generated ${media.kind} via ${data.source}.`;
     }
     if (data.result || data.response || data.answer || data.message) {
       return String(data.result || data.response || data.answer || data.message);
@@ -580,7 +602,7 @@
         resultArea.appendChild(note);
       }
       box.appendChild(resultArea);
-    } else if (PrexzyAPI.describe(message.meta.endpoint)) {
+    } else if (PrexzyAPI.describe(message.meta.endpoint) || message.meta.agent_id === 'video') {
       appendExecuteAction(box, message, email);
     }
   }
@@ -715,18 +737,6 @@
     if (backdrop) backdrop.addEventListener('click', closeDrawer);
     if (newChatBtn) newChatBtn.addEventListener('click', () => { startNewChat(); closeDrawer(); });
 
-    // When the user runs the Master Agent
-logEvent('master_run', { prompt: text.slice(0, 100) });
-
-// When an image is generated successfully
-logEvent('image_success', { endpoint: 'genimage' });
-
-// When quota is exhausted
-logEvent('quota_exhausted', { feature: 'video' });
-
-// On login
-logEvent('user_login');
-    
     // Exposed for index.html's auth glue (enterApp / logout).
     window.MasterChat = {
       reset: startNewChat,

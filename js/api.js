@@ -489,3 +489,24 @@
   global.PrexzyAPI = PrexzyAPI;
 
 })(window);
+/* ---------------------------------------------------------------
+ * Simple event logger → /api/log
+ * Never throws, never blocks the UI
+ * --------------------------------------------------------------- */
+window.logEvent = async function logEvent(event, data = {}) {
+  try {
+    const user = (window.Auth && Auth.current && Auth.current()) || null;
+    await fetch('/api/log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event,
+        user: user ? user.email : null,
+        data
+      })
+    });
+  } catch (e) {
+    // Logging must never break the app
+    console.warn('[logEvent] failed', e);
+  }
+};

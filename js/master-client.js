@@ -10,14 +10,14 @@
  * Prexzy", runs the routed endpoint through PrexzyAPI so the usual
  * quota/refund rules apply.
  *
- * For chat/web, /api/master now does the work itself server-side (rotating
- * across Prexzy's text endpoints, then falling back to OpenRouter
- * generation if all of them fail) and returns `server_executed: true` with
- * the actual answer in `result`. There's nothing left to execute — this
- * file renders `result` directly and hides the Execute button. One
- * consequence: because PrexzyAPI.call() is never invoked on that path, the
- * "chat"/"web" quota buckets are NOT decremented when answered through the
- * Master Agent (they still work normally from the chat/web agent cards).
+ * For chat/web, /api/master does the work itself server-side — generated
+ * directly via the OpenRouter free-model chain, no Prexzy involved — and
+ * returns `server_executed: true` with the actual answer in `result`.
+ * There's nothing left to execute — this file renders `result` directly and
+ * hides the Execute button. One consequence: because PrexzyAPI.call() is
+ * never invoked on that path, the "chat"/"web" quota buckets are NOT
+ * decremented when answered through the Master Agent (they still work
+ * normally from the chat/web agent cards).
  *
  * Quota: routing always consumes the `master` bucket, regardless of which
  * agent gets picked or whether it ends up server-executed.
@@ -34,9 +34,8 @@
 
   // Human-readable label per server-side execution source (chat/web only).
   const SOURCE_LABELS = {
-    'prexzy':           (d) => 'Prexzy — ' + d.endpoint,
-    'openrouter':        (d) => 'OpenRouter — generated directly (' + (d.model_used || 'fallback model') + ')',
-    'openrouter-online': (d) => 'OpenRouter — generated with live web search (' + (d.model_used || 'fallback model') + ')'
+    'openrouter':        (d) => 'OpenRouter — ' + (d.model_used || 'fallback model'),
+    'openrouter-online': (d) => 'OpenRouter — with live web search (' + (d.model_used || 'fallback model') + ')'
   };
 
   function clearAttachment() {
@@ -144,7 +143,9 @@
     box.classList.remove('whitespace-pre-wrap');
 
     const answerEl = document.createElement('div');
-    answerEl.className = 'whitespace-pre-wrap text-slate-800 dark:text-slate-100';
+    answerEl.className = data.agent_id === 'code'
+      ? 'whitespace-pre-wrap font-mono text-xs text-slate-800 dark:text-slate-100 overflow-x-auto'
+      : 'whitespace-pre-wrap text-slate-800 dark:text-slate-100';
     answerEl.textContent = data.result;
 
     const labelFn = SOURCE_LABELS[data.source];

@@ -38,49 +38,68 @@
 
     // ---------------- Text / chat -----------------------------------------
     // Chatex fronts GPT-5.4 — the most capable chat model on Prexzy.
-    // It is the Master Agent's router model (consumed under the `master`
-    // quota bucket there) and is also available to the chat/web agents.
+    // NOTE: chatex wants {text}, NOT {prompt}/{q} — curl-confirmed 2026-08-13
+    // ("Text parameter is required" when sent q= or prompt=). The Master
+    // Agent no longer calls this endpoint at all (see api/master.js), but
+    // the chat/web specialist agent cards still can, so this needs to stay
+    // correct independently.
     'chat.chatex': {
       path: '/ai/chatex',
       method: 'GET',
       feature: 'text',
       build: (p) => ({
         url: qs('/ai/chatex', {
-          q: p.prompt,
+          text: p.text || p.prompt,
           model: p.model || undefined,
           websearch: p.web ? 'true' : undefined
         }),
         init: { method: 'GET' }
       })
     },
+    // NOTE: wants {prompt}, NOT {q} — curl-confirmed 2026-08-13 ("Parameter
+    // \"prompt\" is required" when sent q=).
     'chat.askgpt5': {
       path: '/ai/askgpt5',
       method: 'GET',
       feature: 'text',
       build: (p) => ({
         url: qs('/ai/askgpt5', {
-          q: p.prompt,
+          prompt: p.prompt,
           model: p.model || undefined,
           websearch: p.web ? 'true' : undefined
         }),
         init: { method: 'GET' }
       })
     },
+    // NOTE: wants {prompt}, NOT {q} — same 400 as askgpt5 when sent q=.
     'chat.mistral': {
       path: '/ai/mistral',
       method: 'GET',
       feature: 'text',
       build: (p) => ({
-        url: qs('/ai/mistral', { q: p.prompt, websearch: p.web ? 'true' : undefined }),
+        url: qs('/ai/mistral', { prompt: p.prompt, websearch: p.web ? 'true' : undefined }),
         init: { method: 'GET' }
       })
     },
+    // NOTE: wants {prompt}, NOT {q} — reconfirmed live 2026-08-13.
+    // Keyed as both 'chat.writer' and 'chat.aiwriterChat' — master.js's
+    // routing catalog can output either name for this same endpoint
+    // (image2html/web/chat rows), so both need to resolve here.
     'chat.writer': {
       path: '/ai/aiwriter-chat',
       method: 'GET',
       feature: 'text',
       build: (p) => ({
-        url: qs('/ai/aiwriter-chat', { q: p.prompt, model: p.model || undefined }),
+        url: qs('/ai/aiwriter-chat', { prompt: p.prompt, model: p.model || undefined }),
+        init: { method: 'GET' }
+      })
+    },
+    'chat.aiwriterChat': {
+      path: '/ai/aiwriter-chat',
+      method: 'GET',
+      feature: 'text',
+      build: (p) => ({
+        url: qs('/ai/aiwriter-chat', { prompt: p.prompt, model: p.model || undefined }),
         init: { method: 'GET' }
       })
     },

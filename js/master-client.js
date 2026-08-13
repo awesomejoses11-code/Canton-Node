@@ -1,13 +1,26 @@
 /* =========================================================================
  * master-client.js — Browser side of the Master Agent
  *
- * Sends the natural-language request to /api/master (which routes it with
- * Prexzy's most capable model — GPT-5.4 via Chatex), shows the routing
- * decision, and can execute the routed endpoint through PrexzyAPI so the
- * same quota/refund rules apply as everywhere else.
+ * Sends the natural-language request to /api/master, which routes it via
+ * an OpenRouter free-model chain (Free Models Router → GPT-OSS 20B →
+ * Gemma 4 31B).
  *
- * Quota: routing consumes the `master` bucket; executing the routed call
- * consumes the target agent's bucket (handled inside PrexzyAPI.call).
+ * For image/music/video/code/tts/html2image/image2html, /api/master only
+ * returns a routing decision — this file shows it and, on "Execute on
+ * Prexzy", runs the routed endpoint through PrexzyAPI so the usual
+ * quota/refund rules apply.
+ *
+ * For chat/web, /api/master now does the work itself server-side (rotating
+ * across Prexzy's text endpoints, then falling back to OpenRouter
+ * generation if all of them fail) and returns `server_executed: true` with
+ * the actual answer in `result`. There's nothing left to execute — this
+ * file renders `result` directly and hides the Execute button. One
+ * consequence: because PrexzyAPI.call() is never invoked on that path, the
+ * "chat"/"web" quota buckets are NOT decremented when answered through the
+ * Master Agent (they still work normally from the chat/web agent cards).
+ *
+ * Quota: routing always consumes the `master` bucket, regardless of which
+ * agent gets picked or whether it ends up server-executed.
  * ========================================================================= */
 
 (function () {
@@ -18,6 +31,13 @@
 
   // Features that trigger the "confirm before heavy calls" setting.
   const HEAVY_FEATURES = new Set(['image', 'music', 'video']);
+
+  // Human-readable label per server-side execution source (chat/web only).
+  const SOURCE_LABELS = {
+    'prexzy':           (d) => 'Prexzy — ' + d.endpoint,
+    'openrouter':        (d) => 'OpenRouter — generated directly (' + (d.model_used || 'fallback model') + ')',
+    'openrouter-online': (d) => 'OpenRouter — generated with live web search (' + (d.model_used || 'fallback model') + ')'
+  };
 
   function clearAttachment() {
     attachedFile = null;
@@ -55,7 +75,7 @@
     }
 
     runBtn.disabled = true;
-    show(resultBox, 'Routing with GPT-5.4 (Prexzy Chatex)…');
+    show(resultBox, 'Routing your request…');
     actions.classList.add('hidden');
 
     let refunded = false;
@@ -80,25 +100,66 @@
 
       lastRoute = data;
       badge.textContent = (data.model_used || 'router') + (data.fallback_used ? ' (fallback)' : '');
-      let text =
-        'agent: '     + data.agent_id + '\n' +
-        'endpoint: '  + data.endpoint + '\n' +
-        'params: '    + JSON.stringify(data.params, null, 2) + '\n' +
-        'reasoning: ' + data.reasoning +
-        (data.fallback_note ? '\n\n⚠ ' + data.fallback_note : '');
-      if (attachedFile) {
-        text += '\n\n📎 "' + attachedFile.name + '" attached, but no wired endpoint accepts image input yet — it won\'t be sent to Prexzy.';
-        clearAttachment();
-      }
-      show(resultBox, text);
 
-      // Only offer execution when the routed endpoint exists in the wrapper.
-      actions.classList.toggle('hidden', !PrexzyAPI.describe(data.endpoint));
+      if (data.server_executed) {
+        // chat / web — /api/master already ran this (Prexzy rotation, then
+        // OpenRouter generation if every Prexzy endpoint failed). Nothing
+        // left for the browser to execute.
+        renderServerExecutedResult(resultBox, data);
+        actions.classList.add('hidden');
+        if (attachedFile) clearAttachment(); // no endpoint on this path accepts image input
+      } else {
+        let text =
+          'agent: '     + data.agent_id + '\n' +
+          'endpoint: '  + data.endpoint + '\n' +
+          'params: '    + JSON.stringify(data.params, null, 2) + '\n' +
+          'reasoning: ' + data.reasoning +
+          (data.fallback_note ? '\n\n⚠ ' + data.fallback_note : '');
+        if (attachedFile) {
+          text += '\n\n📎 "' + attachedFile.name + '" attached, but no wired endpoint accepts image input yet — it won\'t be sent to Prexzy.';
+          clearAttachment();
+        }
+        show(resultBox, text);
+        // Only offer execution when the routed endpoint exists in the wrapper.
+        actions.classList.toggle('hidden', !PrexzyAPI.describe(data.endpoint));
+      }
     } catch (e) {
       refundOnce();
       show(resultBox, 'Request failed: ' + e.message);
     } finally {
       runBtn.disabled = false;
+    }
+  }
+
+  /** Renders a server-executed chat/web answer (data.result) plus its source + any fallback note. */
+  function renderServerExecutedResult(box, data) {
+    box.classList.remove('hidden');
+    box.innerHTML = '';
+
+    if (!data.result) {
+      box.classList.add('whitespace-pre-wrap');
+      box.textContent = 'Could not get an answer.' + (data.fallback_note ? '\n\n' + data.fallback_note : '');
+      return;
+    }
+    box.classList.remove('whitespace-pre-wrap');
+
+    const answerEl = document.createElement('div');
+    answerEl.className = 'whitespace-pre-wrap text-slate-800 dark:text-slate-100';
+    answerEl.textContent = data.result;
+
+    const labelFn = SOURCE_LABELS[data.source];
+    const metaEl = document.createElement('div');
+    metaEl.className = 'mt-3 pt-2 border-t border-slate-200 dark:border-slate-700 text-[11px] text-slate-400 font-mono';
+    metaEl.textContent = 'via ' + (labelFn ? labelFn(data) : data.source) +
+      ' · chat/web quota isn\'t deducted for Master Agent answers';
+
+    box.append(answerEl, metaEl);
+
+    if (data.fallback_note) {
+      const noteEl = document.createElement('div');
+      noteEl.className = 'mt-2 text-[11px] text-amber-600 dark:text-amber-400';
+      noteEl.textContent = '⚠ ' + data.fallback_note;
+      box.append(noteEl);
     }
   }
 

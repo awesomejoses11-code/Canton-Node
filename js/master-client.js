@@ -10,58 +10,21 @@
  * Prexzy", runs the routed endpoint through PrexzyAPI so the usual
  * quota/refund rules apply.
  *
- * For chat/web, /api/master does the work itself server-side — generated
- * directly via the OpenRouter free-model chain, no Prexzy involved — and
- * returns `server_executed: true` with the actual answer text in `result`.
- * There's nothing left to execute — this file renders `result` directly.
- * One consequence: because PrexzyAPI.call() is never invoked on that path,
- * the "chat"/"web" quota buckets are NOT decremented when answered through
- * the Master Agent (they still work normally from the chat/web agent cards).
+ * For chat/web, /api/master does the work itself server-side.
  *
- * MARKDOWN (added): assistant text answers are parsed with marked.js and
- * sanitized with DOMPurify before being inserted as HTML — headers, bold,
- * italics, lists, links, code fences etc. render styled instead of showing
- * raw `##`/`**` syntax. See renderMarkdown() below. Two script tags in
- * index.html (marked, DOMPurify) must load before this file; if either is
- * missing for any reason this degrades to plain text rather than breaking.
- * Only assistant prose gets this treatment — user bubbles and the raw
- * agent/endpoint/params routing dump stay as plain monospace text, and
- * agent_id "code" answers stay as plain monospace text too (markdown
- * auto-formatting would mangle raw code, e.g. underscores in identifiers
- * read as italics).
- *
- * Quota: routing always consumes the `master` bucket, regardless of which
- * agent gets picked or whether it ends up server-executed.
- *
- * CHAT HISTORY: the Master Agent is a real conversation, not a one-shot
- * box. Every user/assistant turn renders as a bubble in #master-thread and
- * is persisted via history.js into a per-user session (no projects, no
- * artifacts — just a flat, linear chat). Prior turns of the active session
- * are sent to /api/master as `history` so follow-ups ("make it shorter",
- * "now turn that into an image") resolve with real context. A slide-out
- * drawer (#history-drawer) lists past sessions — click to reopen, ✕ to
- * delete, "+ New Chat" to start fresh.
- *
- * Routed-but-not-executed turns (image/music/video/etc.) keep their own
- * "Execute on Prexzy" button scoped to that specific message — there's no
- * single global "last route" anymore since multiple routed turns can sit
- * in the same thread.
- *
- * Video: when the routed endpoint is video.create, Execute uses
- * PrexzyAPI.generateVideo (Prexzy → Pixazo LTX → Pyramid Flow) with
- * loading spinner instead of a plain callResilient.
+ * Media extraction: recursive walk of Prexzy response shapes (including
+ * nested image_url: [{ image: { url / path / … } }]) so images actually
+ * render instead of dumping raw JSON.
  * ========================================================================= */
 
 (function () {
   'use strict';
 
-  let currentSessionId = null;   // active chat session id, or null (no chat started yet)
-  let attachedFile = null;       // File object from the composer's attach button
+  let currentSessionId = null;
+  let attachedFile = null;
 
-  // Features that trigger the "confirm before heavy calls" setting.
   const HEAVY_FEATURES = new Set(['image', 'music', 'video']);
 
-  // Human-readable label per server-side execution source (chat/web only).
   const SOURCE_LABELS = {
     'openrouter':        (d) => 'OpenRouter — ' + (d.model_used || 'fallback model'),
     'openrouter-online': (d) => 'OpenRouter — with live web search (' + (d.model_used || 'fallback model') + ')'
@@ -83,27 +46,17 @@
     textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
   }
 
-  /** Parses `text` as markdown (marked.js) and sanitizes the result (DOMPurify)
-   *  before writing it into `el` as HTML. Falls back to plain text if either
-   *  library failed to load — never leaves the element blank. */
   function renderMarkdown(el, text) {
     if (window.marked) {
       const raw = marked.parse(String(text == null ? '' : text), { breaks: true, gfm: true });
       el.innerHTML = window.DOMPurify ? DOMPurify.sanitize(raw) : raw;
       el.classList.add('markdown-body');
-      if (window.OutputActions) window.OutputActions.enhanceCodeBlocks(el); // copy/download per code fence
+      if (window.OutputActions) window.OutputActions.enhanceCodeBlocks(el);
     } else {
       el.classList.add('whitespace-pre-wrap');
       el.textContent = text;
     }
   }
-
-  /* -------------------------------------------------------------------
-   * Thread rendering — a plain scrolling list of message bubbles inside
-   * #master-thread. User bubbles right-aligned; assistant bubbles left-
-   * aligned. Assistant bubbles reuse the same render* helpers the old
-   * single result box used, just pointed at a per-message element.
-   * ------------------------------------------------------------------- */
 
   function threadEl() { return document.getElementById('master-thread'); }
 
@@ -130,9 +83,9 @@
   function appendUserBubble(message) {
     hideEmptyState();
     const wrap = document.createElement('div');
-    wrap.className = 'flex justify-end';
+    wrap.className = 'user-bubble-wrap flex justify-end';
     const bubble = document.createElement('div');
-    bubble.className = 'max-w-[85%] rounded-2xl bg-brand-600 text-white text-sm px-3 py-2 whitespace-pre-wrap';
+    bubble.className = 'max-w-[92%] sm:max-w-[85%] rounded-2xl bg-brand-600 text-white text-sm px-3 py-2 whitespace-pre-wrap';
     bubble.textContent = message.content;
     if (message.meta && message.meta.attachmentName) {
       const chip = document.createElement('div');
@@ -145,13 +98,13 @@
     scrollThreadToBottom();
   }
 
-  /** Appends an empty assistant bubble and returns its inner element (the "box" render* helpers write into). */
   function appendAssistantBubble() {
     hideEmptyState();
     const wrap = document.createElement('div');
-    wrap.className = 'flex justify-start';
+    wrap.className = 'flex justify-start w-full';
     const bubble = document.createElement('div');
-    bubble.className = 'max-w-[92%] w-full sm:w-auto rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs sm:text-sm px-3 py-2';
+    // Full width of the composer column so long route dumps / images scale
+    bubble.className = 'assistant-bubble w-full rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs sm:text-sm px-3 py-2';
     wrap.appendChild(bubble);
     threadEl().appendChild(wrap);
     scrollThreadToBottom();
@@ -163,7 +116,6 @@
     show(box, text);
   }
 
-  /** Like showPlain, but for assistant prose: renders as styled markdown instead of raw text. */
   function showMarkdown(box, text) {
     box.classList.remove('whitespace-pre-wrap', 'hidden');
     box.innerHTML = '';
@@ -177,12 +129,6 @@
     el.textContent = text;
   }
 
-  /* -------------------------------------------------------------------
-   * History payload builder — prior turns of the active session, sent to
-   * /api/master as `history` so follow-ups resolve with real context.
-   * Route-kind turns (no free-text result) get a short synthetic summary
-   * rather than being dropped, so the model still knows what happened.
-   * ------------------------------------------------------------------- */
   function buildHistoryPayload(email, sessionId) {
     const session = History.get(email, sessionId);
     if (!session) return [];
@@ -191,7 +137,7 @@
         if (m.role === 'user') return { role: 'user', content: m.content };
         if (m.kind === 'text' && m.content) return { role: 'assistant', content: m.content };
         if (m.kind === 'route' && m.meta) {
-          return { role: 'assistant', content: `[Routed to ${m.meta.agent_id} → ${m.meta.endpoint}]` };
+          return { role: 'assistant', content: '[Routed to ' + m.meta.agent_id + ' → ' + m.meta.endpoint + ']' };
         }
         return null;
       })
@@ -216,24 +162,21 @@
     const email = getEmail();
     const settings = Settings.load(email);
     if (settings.routingMode === 'manual') {
-      showPlain(appendAssistantBubble(), 'Routing mode is set to "Manual selection only" in Settings — pick an agent card below instead.');
+      showPlain(appendAssistantBubble(), 'Routing mode is set to "Manual selection only" in Settings — use the Master Agent with Auto-route enabled.');
       return;
     }
 
-    // Master routing consumes the `master` quota bucket.
     const c = Quota.consume('master');
     if (!c.ok) {
       showPlain(appendAssistantBubble(), 'Daily Master Agent routing limit reached (' + Quota.limit('master') + '/day). Resets at midnight.');
       return;
     }
 
-    // Start a session on the first message of a fresh chat.
     if (!currentSessionId) {
       const session = History.create(email, message);
       currentSessionId = session.id;
     }
 
-    // Snapshot prior turns BEFORE this message is persisted, so it isn't duplicated.
     const priorHistory = buildHistoryPayload(email, currentSessionId);
 
     const userMsg = {
@@ -280,7 +223,6 @@
       badge.textContent = (data.model_used || 'router') + (data.fallback_used ? ' (fallback)' : '');
 
       if (data.server_executed) {
-        // chat / web — /api/master already ran this. Nothing left to execute.
         renderServerExecutedResult(assistantBox, data);
         persistAssistantMessage(email, {
           role: 'assistant', kind: 'text',
@@ -290,7 +232,7 @@
             fallback_note: data.fallback_note, agent_id: data.agent_id
           }
         });
-        if (attachedFile) clearAttachment(); // no endpoint on this path accepts image input
+        if (attachedFile) clearAttachment();
       } else {
         let text =
           'agent: '     + data.agent_id + '\n' +
@@ -317,7 +259,6 @@
         };
         persistAssistantMessage(email, routeMsg);
 
-        // Only offer execution when the routed endpoint exists in the wrapper.
         if (PrexzyAPI.describe(data.endpoint) || data.agent_id === 'video') {
           appendExecuteAction(assistantBox, routeMsg, email);
         }
@@ -332,7 +273,6 @@
     }
   }
 
-  /** Renders a server-executed chat/web answer (data.result) plus its source + any fallback note. */
   function renderServerExecutedResult(box, data) {
     box.classList.remove('hidden');
     box.innerHTML = '';
@@ -346,8 +286,6 @@
 
     const answerEl = document.createElement('div');
     if (data.agent_id === 'code') {
-      // Raw code — leave as plain monospace text. Running it through the
-      // markdown parser would mangle things like underscores in identifiers.
       answerEl.className = 'whitespace-pre-wrap font-mono text-xs text-slate-800 dark:text-slate-100 overflow-x-auto';
       answerEl.textContent = data.result;
     } else {
@@ -371,7 +309,6 @@
     }
   }
 
-  /** Appends the "Execute on Prexzy" action row + wires the click handler, scoped to one bubble/message. */
   function appendExecuteAction(bubbleEl, routeMsg, email) {
     const actions = document.createElement('div');
     actions.className = 'mt-2 pt-2 border-t border-slate-200 dark:border-slate-700 flex items-center gap-2 font-sans';
@@ -408,12 +345,10 @@
       try {
         let data;
         if (isVideo) {
-          // Use the full fallback chain + loading spinner
           data = await PrexzyAPI.generateVideo(routeMsg.meta.params || {}, {
             loadingEl: resultArea,
             poll: true
           });
-          // Normalize for renderExecutionResult / media finder
           if (data && data.url && !data.video_url) data.video_url = data.url;
         } else {
           showPlain(resultArea, 'Executing ' + endpointKey + ' on Prexzy…');
@@ -423,7 +358,7 @@
         routeMsg.meta.executed = true;
         routeMsg.meta.executionSummary = summarizeForStorage(resultArea);
         History.updateMessage(email, currentSessionId, routeMsg.id, { meta: routeMsg.meta });
-        actions.remove(); // one-shot — avoid double-spending quota on the same routed turn
+        actions.remove();
       } catch (e) {
         showPlain(resultArea, (e.kind ? '[' + e.kind + '] ' : '') + e.message);
         btn.disabled = false;
@@ -431,55 +366,124 @@
     });
   }
 
-  // Field names that commonly carry a media URL across different Prexzy
-  // endpoints — same detection idea as the downloader tool, adapted for the
-  // flat JSON objects Prexzy actually returns (no nested `type`/`url` pairs).
-  const MEDIA_FIELDS = {
-    image: ['image_url', 'img_url', 'imageUrl', 'photo_url'],
-    video: ['video_url', 'videoUrl', 'url'],
-    audio: ['audio_url', 'audioUrl', 'voice_url', 'tts_url']
-  };
+  /* ------------------------------------------------------------------
+   * Recursive media finder (Neon Downloader style)
+   * Walks arbitrary Prexzy JSON — including nested image_url arrays like:
+   *   image_url: [{ image: { url / path / name / … }, caption }]
+   * ------------------------------------------------------------------ */
 
-  function findMediaUrl(data) {
-    if (!data || typeof data !== 'object') return null;
-    for (const [kind, fields] of Object.entries(MEDIA_FIELDS)) {
-      for (const f of fields) {
-        if (typeof data[f] === 'string' && /^https?:\/\//i.test(data[f])) {
-          return { kind, url: data[f] };
-        }
-      }
-    }
-    // Generic fallback for endpoints that use a field name we haven't
-    // listed above: any "*url"-named field pointing at an obvious media file.
-    for (const [key, val] of Object.entries(data)) {
-      if (typeof val !== 'string' || !/^https?:\/\//i.test(val)) continue;
-      if (!/url$/i.test(key)) continue;
-      if (/\.(png|jpe?g|gif|webp)(\?|$)/i.test(val)) return { kind: 'image', url: val };
-      if (/\.(mp4|webm|mov)(\?|$)/i.test(val))        return { kind: 'video', url: val };
-      if (/\.(mp3|wav|ogg|m4a)(\?|$)/i.test(val))     return { kind: 'audio', url: val };
-    }
+  function detectType(url, key) {
+    const k = (key || '').toLowerCase();
+    if (/cover|thumb|poster|avatar|image|photo|picture|icon|png|jpg|jpeg|webp|gif/.test(k)) return 'image';
+    if (/music|audio|mp3|song|sound|voice|tts/.test(k)) return 'audio';
+    if (/video|play|mp4|hd|nowm|watermark|download|dl|src|media/.test(k)) return 'video';
+    if (/\.(mp4|webm|mov|m3u8)(\?|$)/i.test(url)) return 'video';
+    if (/\.(mp3|m4a|wav|aac|ogg)(\?|$)/i.test(url)) return 'audio';
+    if (/\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(url)) return 'image';
+    // Gradio / temp CDN links without extension — prefer image when under image_* keys
+    if (/image|dall|flux|txt2img|genimage/i.test(k)) return 'image';
     return null;
   }
 
-  // One plain-English line instead of the raw object, e.g.
-  // 'Generated image for: "a swimming fish"'.
+  function scoreFromKey(key) {
+    const k = (key || '').toLowerCase();
+    let s = 0;
+    if (k === 'url' || k === 'image_url' || k === 'img_url') s += 3;
+    if (k.includes('hd') || k.includes('orig')) s += 2;
+    if (k.includes('thumb') || k.includes('preview')) s -= 1;
+    if (k.includes('path') || k.includes('name')) s += 1;
+    return s;
+  }
+
+  function collectMediaUrls(obj, found, keyHint) {
+    if (found === undefined) found = [];
+    if (keyHint === undefined) keyHint = '';
+    if (obj == null) return found;
+
+    if (typeof obj === 'string') {
+      if (/^https?:\/\//i.test(obj)) {
+        const type = detectType(obj, keyHint) || 'image';
+        found.push({ type: type, url: obj, key: keyHint || 'url', score: scoreFromKey(keyHint) });
+      }
+      return found;
+    }
+
+    if (Array.isArray(obj)) {
+      obj.forEach(function (item) { collectMediaUrls(item, found, keyHint); });
+      return found;
+    }
+
+    if (typeof obj === 'object') {
+      // Common Gradio / Prexzy nested shapes
+      // { url: "https://..." }
+      // { path: "https://..." } or { path: "/tmp/..." } — only keep http(s)
+      // { image: { url / path / name } }
+      // { image_url: [ { image: {...} } ] }
+      var preferredKeys = ['url', 'image_url', 'img_url', 'video_url', 'audio_url', 'path', 'src', 'file', 'name'];
+      for (var i = 0; i < preferredKeys.length; i++) {
+        var pk = preferredKeys[i];
+        if (typeof obj[pk] === 'string' && /^https?:\/\//i.test(obj[pk])) {
+          var t = detectType(obj[pk], keyHint || pk) || detectType(obj[pk], pk) || 'image';
+          found.push({ type: t, url: obj[pk], key: keyHint || pk, score: scoreFromKey(keyHint || pk) + 2 });
+        }
+      }
+
+      Object.keys(obj).forEach(function (k) {
+        collectMediaUrls(obj[k], found, k);
+      });
+    }
+    return found;
+  }
+
+  function findMediaUrl(data) {
+    if (!data || typeof data !== 'object') return null;
+
+    // Fast path: flat fields we already knew about
+    var flat = ['image_url', 'img_url', 'imageUrl', 'photo_url', 'video_url', 'videoUrl', 'audio_url', 'audioUrl', 'url'];
+    for (var i = 0; i < flat.length; i++) {
+      var v = data[flat[i]];
+      if (typeof v === 'string' && /^https?:\/\//i.test(v)) {
+        var kind = /video/i.test(flat[i]) ? 'video' : /audio/i.test(flat[i]) ? 'audio' : 'image';
+        return { kind: kind, url: v };
+      }
+    }
+
+    // Recursive walk (handles DALL·E nested image_url arrays, Gradio FileData, etc.)
+    var items = collectMediaUrls(data);
+    if (!items.length) return null;
+
+    // Prefer image > video > audio for generation endpoints; highest score wins within type
+    items.sort(function (a, b) {
+      var order = { image: 0, video: 1, audio: 2 };
+      var da = order[a.type] != null ? order[a.type] : 9;
+      var db = order[b.type] != null ? order[b.type] : 9;
+      if (da !== db) return da - db;
+      return b.score - a.score;
+    });
+
+    var best = items[0];
+    return { kind: best.type, url: best.url };
+  }
+
   function summarize(data, media) {
     if (data.prompt) {
       return media
-        ? `Generated ${media.kind} for: "${data.prompt}"`
-        : `Done — prompt: "${data.prompt}"`;
+        ? 'Generated ' + media.kind + ' for: "' + data.prompt + '"'
+        : 'Done — prompt: "' + data.prompt + '"';
     }
     if (data.source && media) {
-      return `Generated ${media.kind} via ${data.source}.`;
+      return 'Generated ' + media.kind + ' via ' + data.source + '.';
+    }
+    if (data.note && media) {
+      return 'Generated ' + media.kind + '. ' + data.note;
     }
     if (data.result || data.response || data.answer || data.message) {
       return String(data.result || data.response || data.answer || data.message);
     }
-    return media ? `Generated ${media.kind}.` : 'Request completed.';
+    return media ? 'Generated ' + media.kind + '.' : 'Request completed.';
   }
 
   function renderExecutionResult(box, data) {
-    // Pre-normalized binary shape, if PrexzyAPI.call ever returns one.
     if (data && data._binary) {
       renderMedia(box, {
         kind: data.contentType.startsWith('image/') ? 'image'
@@ -489,16 +493,12 @@
       return;
     }
 
-    // Raw Prexzy JSON — the shape most endpoints actually return today,
-    // e.g. { status, prompt, image_url, job_id }.
     if (data && typeof data === 'object') {
-      const media = findMediaUrl(data);
+      var media = findMediaUrl(data);
       if (media) {
         renderMedia(box, media, summarize(data, media));
         return;
       }
-      // Free-text results (e.g. image2html's underlying askgpt5 call) can
-      // contain the same markdown a chat answer would — render accordingly.
       if (data._text) { showMarkdown(box, data._text); return; }
       if (data.result || data.response || data.answer || data.message) {
         showMarkdown(box, summarize(data, null));
@@ -506,22 +506,20 @@
       }
     }
 
-    // Nothing recognizable — show raw JSON, but labeled as a fallback
-    // rather than presented as if it were the intended output.
     showPlain(box, 'Unrecognized response shape — raw output:\n' + JSON.stringify(data, null, 2));
   }
 
   function renderMedia(box, media, caption) {
     box.classList.remove('hidden');
     box.innerHTML = '';
-    const captionEl = document.createElement('div');
+    var captionEl = document.createElement('div');
     captionEl.className = 'mb-2 text-slate-700 dark:text-slate-200';
     captionEl.textContent = caption;
-    const el = document.createElement(media.kind === 'image' ? 'img' : media.kind === 'audio' ? 'audio' : 'video');
+    var el = document.createElement(media.kind === 'image' ? 'img' : media.kind === 'audio' ? 'audio' : 'video');
     el.src = media.url;
     if (media.kind !== 'image') el.controls = true;
     el.className = 'max-w-full rounded-lg';
-    const link = document.createElement('a');
+    var link = document.createElement('a');
     link.href = media.url;
     link.target = '_blank';
     link.rel = 'noopener';
@@ -531,13 +529,10 @@
     box.append(captionEl, el, link);
   }
 
-  /** Pulls a plain, JSON-serializable summary out of a rendered result area so it can survive a reload.
-   *  Blob URLs (from binary Prexzy responses) don't survive navigation, so those are flagged rather
-   *  than stored as if they'd still resolve. */
   function summarizeForStorage(resultArea) {
-    const mediaEl = resultArea.querySelector('img, audio, video');
-    const captionEl = resultArea.querySelector('div');
-    const isBlob = !!(mediaEl && /^blob:/i.test(mediaEl.src || ''));
+    var mediaEl = resultArea.querySelector('img, audio, video');
+    var captionEl = resultArea.querySelector('div');
+    var isBlob = !!(mediaEl && /^blob:/i.test(mediaEl.src || ''));
     return {
       caption: captionEl ? captionEl.textContent : resultArea.textContent,
       mediaUrl: mediaEl && !isBlob ? mediaEl.src : null,
@@ -546,16 +541,13 @@
     };
   }
 
-  /* -------------------------------------------------------------------
-   * Rehydrating a stored message back into a bubble (session load / app boot).
-   * ------------------------------------------------------------------- */
   function renderStoredMessage(message, email) {
     if (message.role === 'user') {
       appendUserBubble(message);
       return;
     }
 
-    const box = appendAssistantBubble();
+    var box = appendAssistantBubble();
 
     if (message.kind === 'text') {
       if (message.meta && message.meta.isError) {
@@ -571,9 +563,8 @@
       return;
     }
 
-    // kind === 'route'
     box.classList.add('font-mono');
-    const text =
+    var text =
       'agent: '     + message.meta.agent_id + '\n' +
       'endpoint: '  + message.meta.endpoint + '\n' +
       'params: '    + JSON.stringify(message.meta.params, null, 2) + '\n' +
@@ -582,21 +573,21 @@
     showPlain(box, text);
 
     if (message.meta.executed && message.meta.executionSummary) {
-      const s = message.meta.executionSummary;
-      const resultArea = document.createElement('div');
+      var s = message.meta.executionSummary;
+      var resultArea = document.createElement('div');
       resultArea.className = 'mt-2 pt-2 border-t border-slate-200 dark:border-slate-700 font-sans';
-      const captionEl = document.createElement('div');
+      var captionEl = document.createElement('div');
       captionEl.className = 'text-slate-700 dark:text-slate-200 whitespace-pre-wrap';
       captionEl.textContent = s.caption || '';
       resultArea.appendChild(captionEl);
       if (s.mediaUrl) {
-        const el = document.createElement(s.mediaKind === 'image' ? 'img' : s.mediaKind === 'audio' ? 'audio' : 'video');
+        var el = document.createElement(s.mediaKind === 'image' ? 'img' : s.mediaKind === 'audio' ? 'audio' : 'video');
         el.src = s.mediaUrl;
         if (s.mediaKind !== 'image') el.controls = true;
         el.className = 'max-w-full rounded-lg mt-2';
         resultArea.appendChild(el);
       } else if (s.ephemeralMedia) {
-        const note = document.createElement('div');
+        var note = document.createElement('div');
         note.className = 'text-[11px] text-slate-400 mt-1';
         note.textContent = 'Media was generated this session and is no longer viewable after reload.';
         resultArea.appendChild(note);
@@ -607,43 +598,39 @@
     }
   }
 
-  /* -------------------------------------------------------------------
-   * History sidebar — list rendering, new/select/delete.
-   * ------------------------------------------------------------------- */
-
   function renderHistoryList(email) {
     email = email || getEmail();
-    const list = document.getElementById('history-list');
+    var list = document.getElementById('history-list');
     if (!list) return;
     list.innerHTML = '';
 
-    const sessions = email ? History.load(email) : [];
+    var sessions = email ? History.load(email) : [];
     if (!sessions.length) {
-      const p = document.createElement('p');
+      var p = document.createElement('p');
       p.className = 'text-xs text-slate-400 text-center py-4';
       p.textContent = 'No past chats yet.';
       list.appendChild(p);
       return;
     }
 
-    sessions.forEach(session => {
-      const isActive = session.id === currentSessionId;
-      const item = document.createElement('div');
+    sessions.forEach(function (session) {
+      var isActive = session.id === currentSessionId;
+      var item = document.createElement('div');
       item.className = 'group flex items-center gap-1 rounded-lg px-2 py-2 cursor-pointer text-xs ' +
         (isActive
           ? 'bg-brand-50 dark:bg-slate-700 text-brand-700 dark:text-slate-100 font-medium'
           : 'hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300');
 
-      const titleEl = document.createElement('span');
+      var titleEl = document.createElement('span');
       titleEl.className = 'flex-1 truncate';
       titleEl.textContent = session.title || 'New chat';
 
-      const delBtn = document.createElement('button');
+      var delBtn = document.createElement('button');
       delBtn.type = 'button';
       delBtn.className = 'opacity-0 group-hover:opacity-100 text-slate-400 hover:text-rose-500 px-1';
       delBtn.textContent = '✕';
       delBtn.setAttribute('aria-label', 'Delete chat');
-      delBtn.addEventListener('click', (e) => {
+      delBtn.addEventListener('click', function (e) {
         e.stopPropagation();
         if (!confirm('Delete this chat? This can\'t be undone.')) return;
         History.delete(email, session.id);
@@ -651,18 +638,18 @@
         else renderHistoryList(email);
       });
 
-      item.addEventListener('click', () => loadSession(email, session.id));
+      item.addEventListener('click', function () { loadSession(email, session.id); });
       item.append(titleEl, delBtn);
       list.appendChild(item);
     });
   }
 
   function loadSession(email, sessionId) {
-    const session = History.get(email, sessionId);
+    var session = History.get(email, sessionId);
     if (!session) return;
     currentSessionId = sessionId;
     clearThreadDOM();
-    session.messages.forEach(m => renderStoredMessage(m, email));
+    session.messages.forEach(function (m) { renderStoredMessage(m, email); });
     renderHistoryList(email);
     closeDrawer();
   }
@@ -673,12 +660,9 @@
     renderHistoryList();
   }
 
-  /* -------------------------------------------------------------------
-   * Drawer open/close.
-   * ------------------------------------------------------------------- */
   function openDrawer() {
-    const drawer = document.getElementById('history-drawer');
-    const backdrop = document.getElementById('history-backdrop');
+    var drawer = document.getElementById('history-drawer');
+    var backdrop = document.getElementById('history-backdrop');
     if (!drawer || !backdrop) return;
     renderHistoryList();
     drawer.classList.remove('-translate-x-full');
@@ -686,33 +670,33 @@
   }
 
   function closeDrawer() {
-    const drawer = document.getElementById('history-drawer');
-    const backdrop = document.getElementById('history-backdrop');
+    var drawer = document.getElementById('history-drawer');
+    var backdrop = document.getElementById('history-backdrop');
     if (!drawer || !backdrop) return;
     drawer.classList.add('-translate-x-full');
     backdrop.classList.add('hidden');
   }
 
-  document.addEventListener('DOMContentLoaded', () => {
-    const textarea    = document.getElementById('master-input');
-    const attachBtn    = document.getElementById('master-attach');
-    const fileInput     = document.getElementById('master-file-input');
-    const attachChip   = document.getElementById('master-attachment');
-    const attachName   = document.getElementById('master-attachment-name');
-    const removeBtn     = document.getElementById('master-attachment-remove');
+  document.addEventListener('DOMContentLoaded', function () {
+    var textarea    = document.getElementById('master-input');
+    var attachBtn    = document.getElementById('master-attach');
+    var fileInput     = document.getElementById('master-file-input');
+    var attachChip   = document.getElementById('master-attachment');
+    var attachName   = document.getElementById('master-attachment-name');
+    var removeBtn     = document.getElementById('master-attachment-remove');
 
     document.getElementById('master-run').addEventListener('click', runMasterAgent);
-    textarea.addEventListener('keydown', (e) => {
+    textarea.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         runMasterAgent();
       }
     });
-    textarea.addEventListener('input', () => autoGrow(textarea));
+    textarea.addEventListener('input', function () { autoGrow(textarea); });
 
-    attachBtn.addEventListener('click', () => fileInput.click());
-    fileInput.addEventListener('change', () => {
-      const file = fileInput.files[0];
+    attachBtn.addEventListener('click', function () { fileInput.click(); });
+    fileInput.addEventListener('change', function () {
+      var file = fileInput.files[0];
       if (!file) return;
       attachedFile = file;
       attachName.textContent = file.name;
@@ -720,27 +704,25 @@
     });
     removeBtn.addEventListener('click', clearAttachment);
 
-    // ---- History drawer wiring -----------------------------------------
-    const toggleBtn  = document.getElementById('btn-history-toggle');
-    const closeBtn   = document.getElementById('history-close');
-    const backdrop   = document.getElementById('history-backdrop');
-    const newChatBtn = document.getElementById('history-new-chat');
+    var toggleBtn  = document.getElementById('btn-history-toggle');
+    var closeBtn   = document.getElementById('history-close');
+    var backdrop   = document.getElementById('history-backdrop');
+    var newChatBtn = document.getElementById('history-new-chat');
 
     if (toggleBtn) {
-      toggleBtn.addEventListener('click', () => {
-        const drawer = document.getElementById('history-drawer');
+      toggleBtn.addEventListener('click', function () {
+        var drawer = document.getElementById('history-drawer');
         if (drawer.classList.contains('-translate-x-full')) openDrawer();
         else closeDrawer();
       });
     }
     if (closeBtn) closeBtn.addEventListener('click', closeDrawer);
     if (backdrop) backdrop.addEventListener('click', closeDrawer);
-    if (newChatBtn) newChatBtn.addEventListener('click', () => { startNewChat(); closeDrawer(); });
+    if (newChatBtn) newChatBtn.addEventListener('click', function () { startNewChat(); closeDrawer(); });
 
-    // Exposed for index.html's auth glue (enterApp / logout).
     window.MasterChat = {
       reset: startNewChat,
-      closeDrawer
+      closeDrawer: closeDrawer
     };
   });
 

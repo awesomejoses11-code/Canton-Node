@@ -33,16 +33,16 @@
   // Keys are STABLE identifiers used throughout the codebase.
   // If you ever rename one here, also rename it in tools.json / api.js.
   const LIMITS = Object.freeze({
-    master:     30,   // Master Agent routing requests (Prexzy GPT-5.4 router)
+    master:     l00,   // Master Agent routing requests (Prexzy GPT-5.4 router)
     text:       80,   // AI chat / writer / text
-    tts:        60,   // Text-to-speech
+    tts:        50,   // Text-to-speech
     code:       50,   // Code compile / convert
-    web:        40,   // Web / Internet agent
+    web:        30,   // Web / Internet agent
     image2html: 25,   // Image → HTML (composed vision + html gen)
-    html2image: 25,   // HTML → Image
-    image:      10,   // Image generation
+    html2image: 15,   // HTML → Image
+    image:      12,   // Image generation
     music:       8,   // Music / song generation
-    video:       3    // Video generation
+    video:       4    // Video generation
   });
 
   // Human-friendly labels for the dashboard.

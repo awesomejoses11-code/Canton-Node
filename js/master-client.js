@@ -87,6 +87,7 @@
       const raw = marked.parse(String(text == null ? '' : text), { breaks: true, gfm: true });
       el.innerHTML = window.DOMPurify ? DOMPurify.sanitize(raw) : raw;
       el.classList.add('markdown-body');
+      if (window.OutputActions) window.OutputActions.enhanceCodeBlocks(el); // copy/download per code fence
     } else {
       el.classList.add('whitespace-pre-wrap');
       el.textContent = text;

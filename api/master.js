@@ -1,32 +1,52 @@
 /* =========================================================================
- * api/master.js — Master Agent orchestrator (step 3, OpenRouter rework)
+ * api/master.js — Master Agent orchestrator (step 3.1 — OpenRouter does real work)
  *
- * PIVOT: Prexzy's own chat endpoints (chatex/askgpt5/mistral) turned out too
- * unreliable to be the routing brain — occasional downtime plus a param-name
- * mismatch caught via manual curl testing (chatex wants `text`, not `prompt`;
- * see ENDPOINT_DOCS below). Routing now runs on OpenRouter's free-tier
- * models via OPENROUTER_API_KEY. This key stays server-side — never sent to
- * the browser — same reasoning as the old Anthropic key.
+ * PIVOT (this revision): Prexzy's chat endpoints keep flaking under load and
+ * there was no fallback — one failed call and the user got nothing. For
+ * agent_id "chat" and "web" this file no longer just returns a routing
+ * decision and hopes the browser's single Prexzy call succeeds. Instead it:
  *
- * Model chain, most → least reliable for structured tool-calling:
- *   1. openrouter/free   — "Free Models Router": auto-picks a free model AND
- *      specifically filters for tool-calling support, so it's a safe primary.
- *   2. openai/gpt-oss-20b:free — confirmed native function-calling support.
- *   3. google/gemma-4-31b-it:free — tool-calling support unconfirmed for this
- *      model, so we don't force tool_choice on it; we still ask for the same
- *      JSON shape in plain text and extract it defensively.
- * We try each in order and use the first one that returns a usable routing
- * decision, so a single flaky/rate-limited free model never takes the whole
- * Master Agent down.
+ *   1. ROTATES across a chain of Prexzy text endpoints server-side. One
+ *      endpoint failing just advances to the next; the request only fails
+ *      if every endpoint in the chain fails.
+ *   2. If the whole Prexzy chain fails, GENERATES the answer itself using
+ *      the same OpenRouter free-model chain already used for routing — so
+ *      OpenRouter isn't just a JSON-only coordinator anymore, it can do the
+ *      actual work. For "web" specifically, it can also enable OpenRouter's
+ *      web-search plugin as a genuine internet fallback — gated behind
+ *      OPENROUTER_ENABLE_WEB_SEARCH (see note below; this is NOT free).
  *
- * Free-tier cap: 50 req/day at 20 req/min per OpenRouter account until you've
- * ever bought $10+ in credits (then 1,000/day, same 20 rpm). All three models
- * in the chain share that same account-wide cap — they don't stack.
+ * Every other agent_id (image, music, video, code, tts, html2image,
+ * image2html) is UNCHANGED: this file only returns a routing decision and
+ * the browser still executes the call via PrexzyAPI.call(), so those
+ * agents' client-side daily quotas keep working exactly as before.
  *
- * Contract with the browser is unchanged: takes a natural-language request,
- * returns { agent_id, endpoint, params, reasoning, fallback_note, model_used,
- * fallback_used }. The browser executes the actual Prexzy call itself via
- * PrexzyAPI.call() — this endpoint never talks to Prexzy at all now.
+ * ⚠ CONTRACT CHANGE for the browser: when agent_id is "chat" or "web" the
+ * JSON response now includes `server_executed: true`, `result` (the actual
+ * answer text), `source` ('prexzy' | 'openrouter' | 'openrouter-online'),
+ * and `prexzy_attempts` (which endpoints were tried and why they failed).
+ * master-client.js needs to check `server_executed` and render `result`
+ * directly — it must NOT call PrexzyAPI.call(route.endpoint, route.params)
+ * again for these two agents, or it'll double-fetch. One open item this
+ * doesn't solve yet: because the Prexzy call now happens server-side, the
+ * browser's client-side Quota counters for "chat"/"web" are NOT touched by
+ * this path (they still work normally if those specialist agent cards are
+ * opened directly instead of through the Master Agent composer).
+ *
+ * ⚠ COST NOTE: OpenRouter's web-search plugin is billed separately from the
+ * free-tier model chain — $4 per 1,000 results, not covered by the 50
+ * req/day free cap. It is OFF by default. Set OPENROUTER_ENABLE_WEB_SEARCH
+ * to a truthy value in Vercel's env vars to turn it on for the "web" agent's
+ * last-resort fallback. Left off, "web" still gets an OpenRouter-generated
+ * answer when every Prexzy endpoint fails — it just won't have live
+ * internet access on that specific last-resort path.
+ *
+ * Endpoint params below are curl-confirmed, not guessed — don't "fix" them
+ * without re-testing against the live API first:
+ *   /ai/aiwriter-chat  wants  { prompt }   — reconfirmed live 2026-08-13
+ *   /ai/askgpt5        wants  { prompt }   (sending {q} instead 400s: "Parameter \"prompt\" is required")
+ *   /ai/mistral        wants  { prompt }   (same 400 as askgpt5 when sent {q})
+ *   /ai/chatex         wants  { text }     (400s "Text parameter is required" if sent {prompt})
  *
  * NOTE ON DUPLICATION: ENDPOINT_DOCS mirrors the endpoint catalog in
  * js/api.js (path/params). api.js is written for the browser and can't be
@@ -36,19 +56,20 @@
  * ========================================================================= */
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const PREXZY_BASE_URL = 'https://prexzyapis.com';
+const PREXZY_TIMEOUT_MS = 12000;
+
+// See "COST NOTE" above — off unless explicitly enabled in env vars.
+const WEB_SEARCH_FALLBACK_ENABLED = /^(1|true|yes)$/i.test(process.env.OPENROUTER_ENABLE_WEB_SEARCH || '');
 
 /* -------------------------------------------------------------------------
- * Router model chain. `useTools: false` means don't force tool_choice on it
- * (Gemma's tool-calling support on OpenRouter isn't confirmed) — instead
- * rely on the plain-JSON instruction in SYSTEM_PROMPT and parse defensively.
+ * Router model chain. `tool_choice` is always 'auto' — several free-tier
+ * providers behind OpenRouter reject a forced/named tool_choice ("inference-
+ * enforced tool_choice is not supported"), since forcing a specific function
+ * needs guided-generation support most free backends don't implement. This
+ * same chain is reused below (callOpenRouterGenerate) to actually answer
+ * chat/web requests once every Prexzy endpoint has failed.
  * ------------------------------------------------------------------------- */
-// NOTE: tool_choice is always 'auto', never a forced/named choice. Several
-// free-tier providers behind OpenRouter reject forced tool_choice with
-// "inference-enforced tool_choice (required/named) is not supported" —
-// forcing a specific function needs guided-generation support most free
-// backends don't implement. 'auto' lets the model call it voluntarily; the
-// SYSTEM_PROMPT instructs it to, and we still parse plain-text JSON as a
-// fallback for whichever model ignores that instruction.
 const ROUTER_MODELS = [
   { model: 'openrouter/free',            label: 'Free Models Router' },
   { model: 'openai/gpt-oss-20b:free',    label: 'GPT-OSS 20B'        },
@@ -63,12 +84,14 @@ const AGENT_IDS = [
 ];
 
 // endpoint key -> agent_id, for validating the model didn't cross-wire them.
+// null = shared chat.* endpoint, valid for any agent in SHARED_CHAT_ENDPOINT_AGENTS.
 const ENDPOINT_TO_AGENT = {
   'image.txt2img': 'image', 'image.genimage': 'image', 'image.aiwriter': 'image', 'image.dalle': 'image',
   'music.aimelody': 'music', 'music.text2music.create': 'music',
   'video.create': 'video',
-  'chat.chatex': null,  // shared by web / chat — validated by agent_id context instead
-  'chat.askgpt5': null, // shared by image2html / web / chat
+  'chat.aiwriterChat': null, // new: /ai/aiwriter-chat, reconfirmed working — shared like the others below
+  'chat.chatex': null,
+  'chat.askgpt5': null,
   'chat.mistral': null,
   'chat.writer': 'chat', 'chat.summarize': 'chat',
   'html2image.direct': 'html2image', 'html2image.json': 'html2image',
@@ -78,13 +101,9 @@ const ENDPOINT_TO_AGENT = {
   'code.convert.python': 'code', 'code.convert.js': 'code', 'code.convert.java': 'code',
   'code.convert.cpp': 'code', 'code.convert.php': 'code'
 };
-// chat.chatex / chat.askgpt5 / chat.mistral are valid for these agents specifically.
+// chat.aiwriterChat / chat.chatex / chat.askgpt5 / chat.mistral are valid for these agents specifically.
 const SHARED_CHAT_ENDPOINT_AGENTS = ['image2html', 'web', 'chat'];
 
-// NOTE: chat.chatex takes {text}, NOT {prompt} — confirmed via curl:
-// askgpt5/mistral return 400 "Parameter \"prompt\" is required" when sent q=,
-// chatex returns 400 "Text parameter is required". Don't "fix" this back to
-// {prompt} without re-testing against the live API first.
 const ENDPOINT_DOCS = `
 image        image.txt2img        {prompt}
 image        image.genimage       {prompt, size?, steps?}
@@ -99,9 +118,11 @@ html2image   html2image.json      {html, width?, height?}
 tts          tts.default          {text, voice?}
 code         code.compile.python|js|java|c|cpp|csharp   {code, stdin?}
 code         code.convert.python|js|java|cpp|php        {code, from?}
+web          chat.aiwriterChat    {prompt}
 web          chat.chatex          {text, web:true}
 web          chat.askgpt5         {prompt, web:true}
 web          chat.mistral         {prompt, web:true}
+chat         chat.aiwriterChat    {prompt}
 chat         chat.chatex          {text}
 chat         chat.askgpt5         {prompt}
 chat         chat.mistral         {prompt}
@@ -146,6 +167,26 @@ Rules:
 - For code.compile.* / code.convert.* endpoints, "code" must be the actual code from the user's message.
 - Keep "reasoning" to one short sentence.`;
 
+// Ordered Prexzy fallback chains for the two text agents. aiwriter-chat goes
+// first in both — reconfirmed working live via curl on 2026-08-13, while the
+// others are longer-standing but flakier under load. Each build(msg) uses
+// the raw user message directly rather than the router model's extracted
+// params, so a routing hiccup can't also break the actual generation.
+const CHAT_CHAIN = [
+  { endpoint: 'chat.aiwriterChat', build: (msg) => qsUrl('/ai/aiwriter-chat', { prompt: msg }) },
+  { endpoint: 'chat.askgpt5',      build: (msg) => qsUrl('/ai/askgpt5',       { prompt: msg }) },
+  { endpoint: 'chat.mistral',      build: (msg) => qsUrl('/ai/mistral',       { prompt: msg }) },
+  { endpoint: 'chat.chatex',       build: (msg) => qsUrl('/ai/chatex',        { text: msg })   }
+];
+const WEB_CHAIN = [
+  { endpoint: 'chat.askgpt5',      build: (msg) => qsUrl('/ai/askgpt5', { prompt: msg, websearch: 'true' }) },
+  { endpoint: 'chat.mistral',      build: (msg) => qsUrl('/ai/mistral', { prompt: msg, websearch: 'true' }) },
+  { endpoint: 'chat.chatex',       build: (msg) => qsUrl('/ai/chatex',  { text: msg, web: 'true' })          },
+  // No web-search flag confirmed for aiwriter-chat yet — a best-effort
+  // non-web answer still beats nothing if the three above all fail.
+  { endpoint: 'chat.aiwriterChat', build: (msg) => qsUrl('/ai/aiwriter-chat', { prompt: msg }) }
+];
+
 module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method not allowed. Use POST.' });
@@ -176,12 +217,14 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  // Walk the model chain until one returns a usable routing decision.
+  // 1) Get a routing decision — unchanged mechanism, still needed for every
+  //    agent (including chat/web, to keep the response shape consistent and
+  //    to surface the model's reasoning even when we go on to execute below).
   let route = null, modelUsed = null, fallbackUsed = false;
-  const errors = [];
+  const routeErrors = [];
   for (const m of ROUTER_MODELS) {
     try {
-      const parsed = await callOpenRouter(apiKey, m, message);
+      const parsed = await callOpenRouterRoute(apiKey, m, message);
       if (parsed && AGENT_IDS.includes(parsed.agent_id) && ENDPOINT_TO_AGENT[parsed.endpoint] !== undefined) {
         route = parsed;
         modelUsed = m.label;
@@ -189,21 +232,21 @@ module.exports = async function handler(req, res) {
         break;
       }
       if (!parsed) {
-        errors.push(m.label + ': no JSON found in model output');
+        routeErrors.push(m.label + ': no JSON found in model output');
       } else if (!AGENT_IDS.includes(parsed.agent_id)) {
-        errors.push(m.label + ': invalid agent_id "' + parsed.agent_id + '"');
+        routeErrors.push(m.label + ': invalid agent_id "' + parsed.agent_id + '"');
       } else {
-        errors.push(m.label + ': invalid endpoint "' + parsed.endpoint + '"');
+        routeErrors.push(m.label + ': invalid endpoint "' + parsed.endpoint + '"');
       }
     } catch (e) {
-      errors.push(m.label + ': ' + e.message);
+      routeErrors.push(m.label + ': ' + e.message);
     }
   }
 
   if (!route) {
     res.status(502).json({
       error: 'All OpenRouter free models failed to produce a routing decision.',
-      detail: errors.join(' | ')
+      detail: routeErrors.join(' | ')
     });
     return;
   }
@@ -220,10 +263,34 @@ module.exports = async function handler(req, res) {
       `Model paired "${route.endpoint}" with agent "${route.agent_id}", which didn't match — check the result carefully.`;
   }
 
+  const routedParams = sanitizeParams(route.params);
+
+  // 2) chat / web: actually DO the work now (Prexzy rotation, then
+  //    OpenRouter generation as the terminal fallback) instead of leaving it
+  //    to a single client-side Prexzy call.
+  if (route.agent_id === 'chat' || route.agent_id === 'web') {
+    const exec = await runTextAgent(apiKey, route.agent_id, message);
+    res.status(200).json({
+      agent_id: route.agent_id,
+      endpoint: exec.endpoint,
+      params: exec.params,
+      result: exec.text,
+      source: exec.source,
+      server_executed: true,
+      prexzy_attempts: exec.attempts,
+      reasoning: typeof route.reasoning === 'string' ? route.reasoning : '',
+      fallback_note: [fallbackNote, exec.note].filter(Boolean).join(' ') || null,
+      model_used: exec.source === 'prexzy' ? modelUsed : (exec.modelUsed || modelUsed),
+      fallback_used: fallbackUsed || exec.source !== 'prexzy'
+    });
+    return;
+  }
+
+  // 3) Every other agent: unchanged — routing decision only, browser executes.
   res.status(200).json({
     agent_id: route.agent_id,
     endpoint: route.endpoint,
-    params: sanitizeParams(route.params),
+    params: routedParams,
     reasoning: typeof route.reasoning === 'string' ? route.reasoning : '',
     fallback_note: fallbackNote,
     model_used: modelUsed,
@@ -232,11 +299,161 @@ module.exports = async function handler(req, res) {
 };
 
 /* -------------------------------------------------------------------------
- * Call one OpenRouter model with the routing prompt. Tries native tool
- * calling first (when useTools is set); falls back to parsing the message
- * content as JSON either way, since a model can ignore tool_choice.
+ * runTextAgent — rotate across Prexzy text endpoints, then fall back to
+ * OpenRouter generation (optionally with live web search) if all of them
+ * fail. Returns { source, endpoint, params, text, attempts, modelUsed, note }.
  * ------------------------------------------------------------------------- */
-async function callOpenRouter(apiKey, modelCfg, message) {
+async function runTextAgent(apiKey, agentId, message) {
+  const chain = agentId === 'web' ? WEB_CHAIN : CHAT_CHAIN;
+  const attempts = [];
+
+  for (const step of chain) {
+    try {
+      const text = await tryPrexzyText(step.build(message));
+      if (text) {
+        return {
+          source: 'prexzy',
+          endpoint: step.endpoint,
+          params: { prompt: message },
+          text,
+          attempts,
+          note: attempts.length
+            ? `Recovered on ${step.endpoint} after ${attempts.length} Prexzy endpoint(s) failed.`
+            : null
+        };
+      }
+      attempts.push({ endpoint: step.endpoint, error: 'empty response' });
+    } catch (e) {
+      attempts.push({ endpoint: step.endpoint, error: e.message });
+    }
+  }
+
+  // Every Prexzy endpoint in the chain failed — generate directly.
+  const useWebPlugin = agentId === 'web' && WEB_SEARCH_FALLBACK_ENABLED;
+  const failedList = attempts.map(a => a.endpoint).join(', ');
+  for (const m of ROUTER_MODELS) {
+    try {
+      const gen = await callOpenRouterGenerate(apiKey, m, message, useWebPlugin);
+      if (gen.text) {
+        return {
+          source: gen.usedWeb ? 'openrouter-online' : 'openrouter',
+          endpoint: gen.usedWeb ? 'openrouter.generate:online' : 'openrouter.generate',
+          params: { prompt: message },
+          text: gen.text,
+          attempts,
+          modelUsed: m.label,
+          note: `All ${chain.length} Prexzy text endpoint(s) failed (${failedList}) — answered directly via ${m.label}` +
+                (gen.usedWeb ? ' with live web search.' : '.')
+        };
+      }
+      attempts.push({ endpoint: 'openrouter:' + m.model, error: 'empty response' });
+    } catch (e) {
+      attempts.push({ endpoint: 'openrouter:' + m.model, error: e.message });
+    }
+  }
+
+  return {
+    source: 'error',
+    endpoint: null,
+    params: { prompt: message },
+    text: null,
+    attempts,
+    modelUsed: null,
+    note: `All ${chain.length} Prexzy text endpoint(s) and all ${ROUTER_MODELS.length} OpenRouter fallback model(s) failed.`
+  };
+}
+
+/** One Prexzy text-endpoint attempt, with a timeout so a hung endpoint doesn't stall the whole chain. */
+async function tryPrexzyText(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PREXZY_TIMEOUT_MS);
+  try {
+    const resp = await fetch(url, { signal: controller.signal });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const json = await resp.json();
+    if (json && json.status === false) throw new Error(json.message || 'Prexzy reported failure');
+    return extractText(json);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Best-effort text extraction — Prexzy endpoints don't all shape their JSON the same way. */
+function extractText(json) {
+  if (!json) return null;
+  if (typeof json === 'string') return json.trim() || null;
+  const r = json.result;
+  if (typeof r === 'string') return r.trim() || null;
+  if (r && Array.isArray(r.text)) return r.text.join('\n').trim() || null;
+  if (r && typeof r.text === 'string') return r.text.trim() || null;
+  if (r && typeof r.answer === 'string') return r.answer.trim() || null;
+  if (r && typeof r.message === 'string') return r.message.trim() || null;
+  if (typeof json.answer === 'string') return json.answer.trim() || null;
+  if (typeof json.text === 'string') return json.text.trim() || null;
+  if (typeof json.response === 'string') return json.response.trim() || null;
+  if (typeof json.message === 'string' && json.message.toLowerCase() !== 'success') return json.message.trim() || null;
+  return null;
+}
+
+function qsUrl(path, params) {
+  const usp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params || {})) {
+    if (v === undefined || v === null || v === '') continue;
+    usp.append(k, String(v));
+  }
+  const query = usp.toString();
+  return PREXZY_BASE_URL + path + (query ? ('?' + query) : '');
+}
+
+/* -------------------------------------------------------------------------
+ * Call one OpenRouter model purely to GENERATE an answer (not to route).
+ * Reuses ROUTER_MODELS so the free-tier daily cap is shared consistently
+ * with the routing calls above. `useWebPlugin` adds OpenRouter's web-search
+ * plugin — see the COST NOTE at the top of this file before flipping it on.
+ * ------------------------------------------------------------------------- */
+async function callOpenRouterGenerate(apiKey, modelCfg, message, useWebPlugin) {
+  const body = {
+    model: modelCfg.model,
+    messages: [
+      { role: 'system', content: 'You are a helpful assistant. Answer the user directly and concisely.' },
+      { role: 'user', content: message }
+    ],
+    max_tokens: 800
+  };
+  if (useWebPlugin) {
+    // Plugin form (not the ":online" model-slug suffix) — works the same
+    // way regardless of which model in the chain ends up handling it.
+    body.plugins = [{ id: 'web', max_results: 3 }];
+  }
+
+  const resp = await fetch(OPENROUTER_URL, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'authorization': 'Bearer ' + apiKey,
+      'http-referer': 'https://canton-node.vercel.app',
+      'x-title': 'Prexzy Multi-Tool Platform'
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!resp.ok) {
+    const detail = await safeText(resp);
+    throw new Error(`HTTP ${resp.status}${detail ? ' — ' + detail.slice(0, 200) : ''}`);
+  }
+
+  const data = await resp.json();
+  const msg = data && data.choices && data.choices[0] && data.choices[0].message;
+  const text = msg && typeof msg.content === 'string' ? msg.content.trim() : '';
+  return { text: text || null, usedWeb: !!useWebPlugin };
+}
+
+/* -------------------------------------------------------------------------
+ * Call one OpenRouter model with the ROUTING prompt (tool call preferred,
+ * plain-text JSON parsed defensively as a fallback either way, since a
+ * model can ignore tool_choice).
+ * ------------------------------------------------------------------------- */
+async function callOpenRouterRoute(apiKey, modelCfg, message) {
   const body = {
     model: modelCfg.model,
     messages: [
@@ -271,8 +488,6 @@ async function callOpenRouter(apiKey, modelCfg, message) {
     headers: {
       'content-type': 'application/json',
       'authorization': 'Bearer ' + apiKey,
-      // Optional but recommended by OpenRouter for leaderboard attribution —
-      // harmless to include, safe to remove if you don't want it listed.
       'http-referer': 'https://canton-node.vercel.app',
       'x-title': 'Prexzy Multi-Tool Platform'
     },

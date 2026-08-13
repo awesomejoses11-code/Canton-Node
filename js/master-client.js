@@ -18,17 +18,29 @@
  * the "chat"/"web" quota buckets are NOT decremented when answered through
  * the Master Agent (they still work normally from the chat/web agent cards).
  *
+ * MARKDOWN (added): assistant text answers are parsed with marked.js and
+ * sanitized with DOMPurify before being inserted as HTML — headers, bold,
+ * italics, lists, links, code fences etc. render styled instead of showing
+ * raw `##`/`**` syntax. See renderMarkdown() below. Two script tags in
+ * index.html (marked, DOMPurify) must load before this file; if either is
+ * missing for any reason this degrades to plain text rather than breaking.
+ * Only assistant prose gets this treatment — user bubbles and the raw
+ * agent/endpoint/params routing dump stay as plain monospace text, and
+ * agent_id "code" answers stay as plain monospace text too (markdown
+ * auto-formatting would mangle raw code, e.g. underscores in identifiers
+ * read as italics).
+ *
  * Quota: routing always consumes the `master` bucket, regardless of which
  * agent gets picked or whether it ends up server-executed.
  *
- * CHAT HISTORY (added): the Master Agent is now a real conversation, not a
- * one-shot box. Every user/assistant turn renders as a bubble in
- * #master-thread and is persisted via history.js into a per-user session
- * (no projects, no artifacts — just a flat, linear chat). Prior turns of
- * the active session are sent to /api/master as `history` so follow-ups
- * ("make it shorter", "now turn that into an image") resolve with real
- * context. A slide-out drawer (#history-drawer) lists past sessions —
- * click to reopen, ✕ to delete, "+ New Chat" to start fresh.
+ * CHAT HISTORY: the Master Agent is a real conversation, not a one-shot
+ * box. Every user/assistant turn renders as a bubble in #master-thread and
+ * is persisted via history.js into a per-user session (no projects, no
+ * artifacts — just a flat, linear chat). Prior turns of the active session
+ * are sent to /api/master as `history` so follow-ups ("make it shorter",
+ * "now turn that into an image") resolve with real context. A slide-out
+ * drawer (#history-drawer) lists past sessions — click to reopen, ✕ to
+ * delete, "+ New Chat" to start fresh.
  *
  * Routed-but-not-executed turns (image/music/video/etc.) keep their own
  * "Execute on Prexzy" button scoped to that specific message — there's no
@@ -65,6 +77,20 @@
   function autoGrow(textarea) {
     textarea.style.height = 'auto';
     textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
+  }
+
+  /** Parses `text` as markdown (marked.js) and sanitizes the result (DOMPurify)
+   *  before writing it into `el` as HTML. Falls back to plain text if either
+   *  library failed to load — never leaves the element blank. */
+  function renderMarkdown(el, text) {
+    if (window.marked) {
+      const raw = marked.parse(String(text == null ? '' : text), { breaks: true, gfm: true });
+      el.innerHTML = window.DOMPurify ? DOMPurify.sanitize(raw) : raw;
+      el.classList.add('markdown-body');
+    } else {
+      el.classList.add('whitespace-pre-wrap');
+      el.textContent = text;
+    }
   }
 
   /* -------------------------------------------------------------------
@@ -130,6 +156,15 @@
   function showPlain(box, text) {
     box.classList.add('whitespace-pre-wrap');
     show(box, text);
+  }
+
+  /** Like showPlain, but for assistant prose: renders as styled markdown instead of raw text. */
+  function showMarkdown(box, text) {
+    box.classList.remove('whitespace-pre-wrap', 'hidden');
+    box.innerHTML = '';
+    const el = document.createElement('div');
+    renderMarkdown(el, text);
+    box.appendChild(el);
   }
 
   function show(el, text) {
@@ -303,10 +338,15 @@
     box.classList.remove('whitespace-pre-wrap');
 
     const answerEl = document.createElement('div');
-    answerEl.className = data.agent_id === 'code'
-      ? 'whitespace-pre-wrap font-mono text-xs text-slate-800 dark:text-slate-100 overflow-x-auto'
-      : 'whitespace-pre-wrap text-slate-800 dark:text-slate-100';
-    answerEl.textContent = data.result;
+    if (data.agent_id === 'code') {
+      // Raw code — leave as plain monospace text. Running it through the
+      // markdown parser would mangle things like underscores in identifiers.
+      answerEl.className = 'whitespace-pre-wrap font-mono text-xs text-slate-800 dark:text-slate-100 overflow-x-auto';
+      answerEl.textContent = data.result;
+    } else {
+      answerEl.className = 'text-slate-800 dark:text-slate-100';
+      renderMarkdown(answerEl, data.result);
+    }
 
     const labelFn = SOURCE_LABELS[data.source];
     const metaEl = document.createElement('div');
@@ -434,9 +474,11 @@
         renderMedia(box, media, summarize(data, media));
         return;
       }
-      if (data._text) { showPlain(box, data._text); return; }
+      // Free-text results (e.g. image2html's underlying askgpt5 call) can
+      // contain the same markdown a chat answer would — render accordingly.
+      if (data._text) { showMarkdown(box, data._text); return; }
       if (data.result || data.response || data.answer || data.message) {
-        showPlain(box, summarize(data, null));
+        showMarkdown(box, summarize(data, null));
         return;
       }
     }
@@ -672,7 +714,7 @@
     if (backdrop) backdrop.addEventListener('click', closeDrawer);
     if (newChatBtn) newChatBtn.addEventListener('click', () => { startNewChat(); closeDrawer(); });
 
-    // Exposed for index-6.html's auth glue (enterApp / logout).
+    // Exposed for index.html's auth glue (enterApp / logout).
     window.MasterChat = {
       reset: startNewChat,
       closeDrawer

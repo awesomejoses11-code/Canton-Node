@@ -488,6 +488,32 @@
   // Expose globally.
   global.PrexzyAPI = PrexzyAPI;
 
+async function generateImageWithHF(prompt) {
+  const token = process.env.HF_TOKEN;          // already in your Vercel env
+  if (!token) throw new Error('HF_TOKEN not set');
+
+  const response = await fetch(
+    'https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ inputs: prompt })
+    }
+  );
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`Hugging Face image failed: ${response.status} – ${err}`);
+  }
+
+  // Returns binary image
+  const blob = await response.blob();
+  return blob;
+}
+  
 })(window);
 /* ---------------------------------------------------------------
  * Simple event logger → /api/log

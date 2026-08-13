@@ -33,7 +33,7 @@
   // Keys are STABLE identifiers used throughout the codebase.
   // If you ever rename one here, also rename it in tools.json / api.js.
   const LIMITS = Object.freeze({
-    master:    l00,   // Master Agent routing requests (Prexzy GPT-5.4 router)
+    master:    100,   // Master Agent routing requests (Prexzy GPT-5.4 router)
     text:       80,   // AI chat / writer / text
     tts:        50,   // Text-to-speech
     code:       50,   // Code compile / convert

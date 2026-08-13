@@ -715,6 +715,18 @@
     if (backdrop) backdrop.addEventListener('click', closeDrawer);
     if (newChatBtn) newChatBtn.addEventListener('click', () => { startNewChat(); closeDrawer(); });
 
+    // When the user runs the Master Agent
+logEvent('master_run', { prompt: text.slice(0, 100) });
+
+// When an image is generated successfully
+logEvent('image_success', { endpoint: 'genimage' });
+
+// When quota is exhausted
+logEvent('quota_exhausted', { feature: 'video' });
+
+// On login
+logEvent('user_login');
+    
     // Exposed for index.html's auth glue (enterApp / logout).
     window.MasterChat = {
       reset: startNewChat,

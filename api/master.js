@@ -558,6 +558,30 @@ function extractRouteJson(raw) {
   return null;
 }
 
+async function generateImage(prompt, size = '1024x1024') {
+  // 1. Try Prexzy first
+  try {
+    const result = await PrexzyAPI.call('image.genimage', { prompt, size });
+    if (result?.url || result?.image) {
+      return { ...result, source: 'prexzy' };
+    }
+  } catch (e) {
+    console.warn('Prexzy image failed → trying Hugging Face', e.message);
+  }
+
+  // 2. Fallback to Hugging Face
+  const blob = await generateImageWithHF(prompt);
+  
+  // You will need to turn the blob into a URL the UI can display
+  // (either base64 or upload it somewhere temporary)
+  const base64 = await blobToBase64(blob);
+  return {
+    image: base64,
+    source: 'huggingface',
+    model: 'FLUX.1-schnell'
+  };
+}
+
 async function safeText(resp) {
   try { return await resp.text(); } catch (_) { return ''; }
 }

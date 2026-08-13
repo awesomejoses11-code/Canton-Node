@@ -173,10 +173,24 @@
       color: #fff;
     }
 
-    /* ===== Master Agent message alignment & overflow control ===== */
-    #master-thread .assistant-msg,
-    #master-thread .user-msg {
+    /* ===== Master Agent: full-width bubbles aligned with composer ===== */
+    #master-thread {
+      padding-left: 0;
+      padding-right: 0;
+      max-height: min(70vh, 36rem);
+    }
+
+    #master-thread .assistant-bubble,
+    #master-thread .user-bubble-wrap {
+      width: 100%;
       max-width: 100%;
+      box-sizing: border-box;
+    }
+
+    #master-thread .assistant-bubble {
+      /* Match the composer width — no narrow chat column */
+      max-width: 100% !important;
+      width: 100%;
     }
 
     #master-thread .markdown-body {
@@ -209,22 +223,25 @@
       border-color: rgb(51 65 85);
     }
 
-    #master-thread .markdown-body pre {
+    #master-thread .markdown-body pre,
+    #master-thread .font-mono {
       max-width: 100%;
       overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
 
-    /* === Make master thread messages full width === */
-    #master-thread {
-      padding-left: 0.5rem;
-      padding-right: 0.5rem;  /* matches composer's p-2 */
+    /* Raw route / execution dumps should grow with content, not feel cramped */
+    #master-thread .assistant-bubble.font-mono {
+      font-size: 0.75rem;
+      line-height: 1.45;
     }
 
-    #master-thread .assistant-msg,
-    #master-thread .user-msg {
-      width: 100%;
-      box-sizing: border-box;
-      margin: 0;  /* remove any default margins that cause gaps */
+    #master-thread img,
+    #master-thread video {
+      max-width: 100%;
+      height: auto;
+      border-radius: 0.75rem;
     }
   </style>
 </head>
@@ -294,10 +311,6 @@
   <div id="app-view" class="hidden flex-1 flex-col justify-between">
 
     <!-- ==================== Chat history drawer ==================== -->
-    <!-- Overlay, not in-flow — sits above everything else and slides in
-         from the left. Only relevant to the Agents tab (Master Agent),
-         shown/hidden via switchTab(). No projects, no artifacts — just a
-         flat list of past chats, newest first. -->
     <div id="history-backdrop" class="hidden fixed inset-0 bg-black/30 z-30"></div>
     <aside id="history-drawer"
            class="fixed top-0 left-0 h-full w-72 max-w-[80vw] bg-white dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 z-40 -translate-x-full transition-transform duration-200 ease-out flex flex-col">
@@ -342,8 +355,6 @@
           </div>
         </div>
 
-        <!-- Aligned tab bar: every tab button shares the same base classes,
-             switchTab() only toggles the active/inactive modifier classes. -->
         <nav class="justify-self-center flex items-center space-x-1 border border-slate-200 dark:border-slate-700 p-1 rounded-xl bg-slate-50 dark:bg-slate-900 text-xs font-medium shadow-sm">
           <button id="tab-btn-models"   data-tab="models"   class="tab-btn px-3 py-1.5 rounded-lg">Agents</button>
           <button id="tab-btn-limits"   data-tab="limits"   class="tab-btn px-3 py-1.5 rounded-lg">Limits</button>
@@ -364,7 +375,7 @@
       <!-- ======================= Tab: Agents ======================= -->
       <div id="tab-content-models" class="tab-content space-y-8">
 
-        <!-- Master Agent panel -->
+        <!-- Master Agent panel — primary (and only) workspace on this tab -->
         <section class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-5">
           <div class="flex items-center justify-between mb-3">
             <div>
@@ -378,10 +389,7 @@
                   title="Routing model used on the last request">Free Models Router</span>
           </div>
 
-          <!-- Conversation thread — populated by master-client.js. Persisted
-               per-session via history.js so it survives reloads and is
-               browsable from the chat history drawer. -->
-          <div id="master-thread" class="space-y-3 mb-3 max-h-[26rem] overflow-y-auto pr-1">
+          <div id="master-thread" class="space-y-3 mb-3 overflow-y-auto pr-1">
             <p id="master-thread-empty" class="text-xs text-slate-400 text-center py-6">No messages yet — start a conversation below.</p>
           </div>
 
@@ -415,29 +423,8 @@
           </div>
         </section>
 
-        <!-- Specialist agents -->
-        <section>
-          <div class="flex items-center justify-between mb-3">
-            <h2 class="text-base font-display font-semibold">Specialist agents</h2>
-            <span class="text-xs text-slate-500 dark:text-slate-400">Click a card to open the agent</span>
-          </div>
-          <div id="tool-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>
-        </section>
-
-        <!-- Active agent workspace -->
-        <section id="agent-workspace" class="hidden bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-5">
-          <div class="flex items-center justify-between mb-4">
-            <div>
-              <h2 id="workspace-title" class="text-base font-display font-semibold">Agent</h2>
-              <p id="workspace-desc" class="text-xs text-slate-500 dark:text-slate-400"></p>
-            </div>
-            <button id="workspace-close"
-                    class="text-xs px-3 py-1.5 rounded-md border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700">
-              Close
-            </button>
-          </div>
-          <div id="workspace-body"></div>
-        </section>
+        <!-- Specialist agent cards removed: Master Agent routes automatically;
+             quotas remain visible under the Limits tab. -->
       </div>
 
       <!-- ======================= Tab: Limits ======================= -->
@@ -627,9 +614,6 @@
       el.classList.toggle('hidden', !msg);
     }
 
-    // Fills the Settings form from a user's saved settings — called both on
-    // fresh login (enterApp) and on session restore at boot, so the form is
-    // never stale/blank when the user opens the Settings tab.
     function populateSettingsForm(user, s) {
       document.getElementById('set-display-name').value   = s.displayName || user.username;
       document.getElementById('set-theme').value           = s.theme;
@@ -644,11 +628,11 @@
 
     function enterApp(user) {
       const settings = Settings.load(user.email);
-      Quota.setScope(user.email);       // per-user quota buckets
-      Settings.applyAll(settings);      // theme + accent + ui prefs
-      populateSettingsForm(user, settings); // Display Name (+ everything else) editable in Settings
-      Hub.refresh();                    // re-render quota + cards with new scope
-      if (window.MasterChat) window.MasterChat.reset(); // fresh chat + this user's history list
+      Quota.setScope(user.email);
+      Settings.applyAll(settings);
+      populateSettingsForm(user, settings);
+      Hub.refresh();
+      if (window.MasterChat) window.MasterChat.reset();
       document.getElementById('auth-view').classList.add('hidden');
       document.getElementById('app-view').classList.remove('hidden');
       switchTab('models');
@@ -676,12 +660,11 @@
     document.getElementById('btn-logout').addEventListener('click', () => {
       Auth.logout();
       Quota.setScope('anon');
-      if (window.MasterChat) window.MasterChat.reset(); // clear the outgoing user's chat from view
+      if (window.MasterChat) window.MasterChat.reset();
       document.getElementById('app-view').classList.add('hidden');
       document.getElementById('auth-view').classList.remove('hidden');
     });
 
-    // ---- Settings form ---------------------------------------------
     document.getElementById('settings-form').addEventListener('submit', (e) => {
       e.preventDefault();
       const user = Auth.current();
@@ -705,12 +688,11 @@
       setTimeout(() => ok.classList.add('hidden'), 2000);
     });
 
-    // ---- Boot: restore persisted session ---------------------------
     document.addEventListener('DOMContentLoaded', () => {
-      Settings.applyAll(Settings.load((Auth.current() || {}).email)); // theme before paint of app
-      const user = Auth.current();   // sessionStorage → localStorage, expiry-checked
+      Settings.applyAll(Settings.load((Auth.current() || {}).email));
+      const user = Auth.current();
       if (user) {
-        enterApp(user); // also populates the Settings form for this user
+        enterApp(user);
       }
       switchTab('models');
     });

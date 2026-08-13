@@ -1,4 +1,9 @@
 {
-  "$comment": "Index of Senpi-style skills. Filled in during step 5 (skill loader). Each entry points at a SKILL.md file that carries YAML frontmatter + a natural-language description of what the skill does and which endpoints it uses.",
-  "skills": []
+  "skills": [
+    { "id": "image",  "path": "skills/image-generator/SKILL.md" },
+    { "id": "music",  "path": "skills/music-generator/SKILL.md" },
+    { "id": "video",  "path": "skills/video-generator/SKILL.md" },
+    { "id": "tts",    "path": "skills/tts/SKILL.md" },
+    { "id": "code",   "path": "skills/code/SKILL.md" },
+  ]
 }

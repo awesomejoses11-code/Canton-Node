@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00D2FF"/>
+      <stop offset="100%" stop-color="#00A8E8"/>
+    </linearGradient>
+    <filter id="glow"><feGaussianBlur stdDeviation="1.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <rect width="128" height="128" fill="#050816"/>
+  <g fill="none" stroke="url(#g)" stroke-width="2" filter="url(#glow)">
+    <path d="M28 40 L40 28 L88 28 L100 40 L100 88 L88 100 L40 100 L28 88 Z"/>
+    <path d="M36 48 L44 36 L84 36 L92 48 L92 80 L84 92 L44 92 L36 80 Z" opacity="0.6"/>
+  </g>
+  <text x="64" y="58" text-anchor="middle" font-family="Arial Black,sans-serif" font-size="14" font-weight="900" fill="#00D2FF" filter="url(#glow)">CANTON</text>
+  <text x="64" y="78" text-anchor="middle" font-family="Arial Black,sans-serif" font-size="16" font-weight="900" fill="#00E5FF" filter="url(#glow)">NODE</text>
+</svg>

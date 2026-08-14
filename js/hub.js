@@ -62,3 +62,72 @@
   });
 
 })();
+
+
+/* ---- Image generation (HF → Prexzy) + Execute path wiring ---- */
+(function (global) {
+  'use strict';
+  function wire() {
+    if (!global.PrexzyAPI) return;
+    var PrexzyError = global.PrexzyAPI.PrexzyError;
+
+    if (!global.PrexzyAPI.generateImage) {
+      global.PrexzyAPI.generateImage = async function (params, opts) {
+        opts = opts || {};
+        var prompt = (params && params.prompt) || '';
+        if (!prompt) throw new PrexzyError('unknown', 'Missing prompt for image');
+        var c = global.Quota.consume('image');
+        if (!c.ok) {
+          throw new PrexzyError('quota', 'Daily limit reached for "image". Try again tomorrow.', { feature: 'image' });
+        }
+        var loading = null;
+        if (opts.loadingEl && global.PrexzyAPI.showLoading) {
+          loading = global.PrexzyAPI.showLoading(opts.loadingEl, 'Generating image…');
+        }
+        var refunded = false;
+        function refundOnce() {
+          if (!refunded) { global.Quota.refund('image'); refunded = true; }
+        }
+        try {
+          if (loading) loading.setMessage('Trying Hugging Face FLUX → Prexzy…');
+          var res = await fetch('/api/image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt: prompt, size: params.size || undefined }),
+            signal: opts.signal
+          });
+          var data = await res.json().catch(function () { return {}; });
+          if (!res.ok) {
+            refundOnce();
+            throw new PrexzyError('http', data.error || ('HTTP ' + res.status), { status: res.status });
+          }
+          if (loading) loading.clear();
+          if (data.url && !data.image_url) data.image_url = data.url;
+          return data;
+        } catch (e) {
+          refundOnce();
+          if (loading) loading.clear();
+          if (e instanceof PrexzyError) throw e;
+          throw new PrexzyError('network', e.message || 'Image request failed');
+        }
+      };
+    }
+
+    // Route image.* Execute calls through generateImage
+    if (global.PrexzyAPI.callResilient && !global.PrexzyAPI._imageWire) {
+      global.PrexzyAPI._imageWire = true;
+      var orig = global.PrexzyAPI.callResilient.bind(global.PrexzyAPI);
+      global.PrexzyAPI.callResilient = async function (key, params, opts) {
+        if (key && String(key).indexOf('image.') === 0) {
+          return global.PrexzyAPI.generateImage(params || {}, opts || {});
+        }
+        return orig(key, params, opts);
+      };
+    }
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wire);
+  } else {
+    wire();
+  }
+})(window);

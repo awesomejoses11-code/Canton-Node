@@ -225,11 +225,51 @@
             </div>
           </form>
         </section>
+
+        <!-- MCP Servers -->
+        <section class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-5">
+          <div class="flex items-start justify-between gap-3 mb-4">
+            <div>
+              <h2 class="text-base font-display font-semibold mb-1">MCP Servers</h2>
+              <p class="text-xs text-slate-500 dark:text-slate-400">Connect remote Model Context Protocol endpoints (HTTPS). Tools become available to Master Agent.</p>
+            </div>
+            <button type="button" id="mcp-add-btn" class="shrink-0 rounded-lg bg-brand-600 text-white px-3 py-1.5 text-xs font-medium hover:bg-brand-700">+ Add</button>
+          </div>
+
+          <div id="mcp-form" class="hidden mb-4 p-4 rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900/50 space-y-3">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs font-medium mb-1">Name</label>
+                <input id="mcp-name" type="text" placeholder="e.g. GitHub tools"
+                       class="w-full rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
+              </div>
+              <div>
+                <label class="block text-xs font-medium mb-1">Server URL (HTTPS)</label>
+                <input id="mcp-url" type="url" placeholder="https://mcp.example.com/mcp"
+                       class="w-full rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
+              </div>
+            </div>
+            <div>
+              <label class="block text-xs font-medium mb-1">Auth header value <span class="text-slate-400 font-normal">(optional Bearer token / API key)</span></label>
+              <input id="mcp-auth" type="password" placeholder="Bearer sk-… or raw key"
+                     class="w-full rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <button type="button" id="mcp-test-btn" class="rounded-lg border border-slate-300 dark:border-slate-600 px-3 py-1.5 text-xs font-medium hover:bg-slate-100 dark:hover:bg-slate-800">Test connection</button>
+              <button type="button" id="mcp-save-btn" class="rounded-lg bg-brand-600 text-white px-3 py-1.5 text-xs font-medium hover:bg-brand-700">Save server</button>
+              <button type="button" id="mcp-cancel-btn" class="rounded-lg px-3 py-1.5 text-xs text-slate-500">Cancel</button>
+              <span id="mcp-form-status" class="text-xs text-slate-500"></span>
+            </div>
+          </div>
+
+          <div id="mcp-list" class="space-y-2"></div>
+          <p id="mcp-empty" class="text-xs text-slate-400 py-2">No MCP servers yet. Add a remote Streamable HTTP endpoint to expose external tools.</p>
+        </section>
       </div>
     </main>
 
     <footer class="max-w-6xl mx-auto px-4 py-8 text-center text-xs text-slate-400">
-      Canton Node · private build · Master + personalization · image HF→Prexzy · video MuAPI→Pixazo→Pyramid→Prexzy
+      Canton Node · private build · Master + MCP · image HF→Prexzy · video MuAPI→Pixazo→Pyramid→Prexzy
     </footer>
   </div>
 
@@ -238,6 +278,7 @@
   <script src="js/settings.js"></script>
   <script src="js/api.js"></script>
   <script src="js/skill-loader.js"></script>
+  <script src="js/mcp-client.js"></script>
   <script src="js/hub.js"></script>
   <script src="js/history.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/16.3.0/lib/marked.umd.min.js"></script>
@@ -257,6 +298,7 @@
       if (historyToggle) historyToggle.classList.toggle('hidden', activeTab !== 'models');
       if (activeTab !== 'models' && window.MasterChat) window.MasterChat.closeDrawer();
       if (activeTab === 'limits' && window.Quota && window.Quota.renderLimits) window.Quota.renderLimits();
+      if (activeTab === 'settings' && window.renderMcpList) window.renderMcpList();
     }
     document.querySelectorAll('.tab-btn').forEach(btn =>
       btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
@@ -297,6 +339,7 @@
       populateSettingsForm(user, settings);
       if (window.Hub && Hub.refresh) Hub.refresh();
       if (window.MasterChat) window.MasterChat.reset();
+      if (window.renderMcpList) window.renderMcpList();
       document.getElementById('auth-view').classList.add('hidden');
       document.getElementById('app-view').classList.remove('hidden');
       switchTab('models');
@@ -349,6 +392,147 @@
       ok.classList.remove('hidden');
       setTimeout(() => ok.classList.add('hidden'), 2000);
     });
+
+    /* ---- MCP Settings UI ---- */
+    function mcpCurrentEmail() {
+      const u = Auth.current();
+      return u ? u.email : 'anon';
+    }
+
+    function renderMcpList() {
+      if (!window.MCPClient) return;
+      const listEl = document.getElementById('mcp-list');
+      const emptyEl = document.getElementById('mcp-empty');
+      const servers = MCPClient.listServers(mcpCurrentEmail());
+      listEl.innerHTML = '';
+      emptyEl.classList.toggle('hidden', servers.length > 0);
+
+      servers.forEach(function (s) {
+        const card = document.createElement('div');
+        card.className = 'flex flex-col sm:flex-row sm:items-center gap-2 p-3 rounded-xl border border-slate-200 dark:border-slate-600';
+        const toolCount = (s.lastTools && s.lastTools.length) || 0;
+        card.innerHTML =
+          '<div class="flex-1 min-w-0">' +
+            '<div class="flex items-center gap-2">' +
+              '<span class="text-sm font-medium truncate">' + escapeHtml(s.name) + '</span>' +
+              (s.enabled
+                ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">on</span>'
+                : '<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-500">off</span>') +
+            '</div>' +
+            '<p class="text-[11px] text-slate-400 font-mono truncate">' + escapeHtml(s.url) + '</p>' +
+            (s.lastError
+              ? '<p class="text-[11px] text-rose-500 mt-0.5">' + escapeHtml(s.lastError) + '</p>'
+              : (toolCount ? '<p class="text-[11px] text-slate-500 mt-0.5">' + toolCount + ' tool(s) cached</p>' : '')) +
+          '</div>' +
+          '<div class="flex flex-wrap gap-1.5 shrink-0">' +
+            '<button type="button" data-mcp-action="toggle" data-id="' + s.id + '" class="text-xs px-2 py-1 rounded-lg border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-800">' + (s.enabled ? 'Disable' : 'Enable') + '</button>' +
+            '<button type="button" data-mcp-action="refresh" data-id="' + s.id + '" class="text-xs px-2 py-1 rounded-lg border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-800">Refresh tools</button>' +
+            '<button type="button" data-mcp-action="remove" data-id="' + s.id + '" class="text-xs px-2 py-1 rounded-lg border border-rose-200 dark:border-rose-900 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950">Remove</button>' +
+          '</div>';
+        listEl.appendChild(card);
+      });
+
+      listEl.querySelectorAll('[data-mcp-action]').forEach(function (btn) {
+        btn.addEventListener('click', async function () {
+          const id = btn.getAttribute('data-id');
+          const action = btn.getAttribute('data-mcp-action');
+          const email = mcpCurrentEmail();
+          if (action === 'remove') {
+            MCPClient.removeServer(email, id);
+            renderMcpList();
+            return;
+          }
+          if (action === 'toggle') {
+            const s = MCPClient.listServers(email).find(function (x) { return x.id === id; });
+            if (s) MCPClient.updateServer(email, id, { enabled: !s.enabled });
+            renderMcpList();
+            return;
+          }
+          if (action === 'refresh') {
+            btn.disabled = true;
+            btn.textContent = '…';
+            const s = MCPClient.listServers(email).find(function (x) { return x.id === id; });
+            if (s) {
+              const res = await MCPClient.listTools(s);
+              MCPClient.updateServer(email, id, {
+                lastTools: res.ok ? (res.tools || []) : [],
+                lastError: res.ok ? null : (res.error || 'Failed'),
+                lastChecked: new Date().toISOString()
+              });
+            }
+            renderMcpList();
+          }
+        });
+      });
+    }
+    window.renderMcpList = renderMcpList;
+
+    function escapeHtml(str) {
+      return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function mcpBuildHeaders() {
+      const raw = document.getElementById('mcp-auth').value.trim();
+      if (!raw) return {};
+      if (/^bearer\s+/i.test(raw)) return { Authorization: raw };
+      return { Authorization: 'Bearer ' + raw };
+    }
+
+    document.getElementById('mcp-add-btn').addEventListener('click', function () {
+      document.getElementById('mcp-form').classList.remove('hidden');
+      document.getElementById('mcp-form-status').textContent = '';
+    });
+    document.getElementById('mcp-cancel-btn').addEventListener('click', function () {
+      document.getElementById('mcp-form').classList.add('hidden');
+      document.getElementById('mcp-name').value = '';
+      document.getElementById('mcp-url').value = '';
+      document.getElementById('mcp-auth').value = '';
+      document.getElementById('mcp-form-status').textContent = '';
+    });
+    document.getElementById('mcp-test-btn').addEventListener('click', async function () {
+      const status = document.getElementById('mcp-form-status');
+      const url = document.getElementById('mcp-url').value.trim();
+      if (!url) { status.textContent = 'URL required'; status.className = 'text-xs text-rose-500'; return; }
+      status.textContent = 'Testing…'; status.className = 'text-xs text-slate-500';
+      const res = await MCPClient.testServer({ url: url, headers: mcpBuildHeaders() });
+      if (res.ok) {
+        status.textContent = 'OK — ' + (res.tools || []).length + ' tool(s)';
+        status.className = 'text-xs text-emerald-600';
+      } else {
+        status.textContent = res.error || 'Failed';
+        status.className = 'text-xs text-rose-500';
+      }
+    });
+    document.getElementById('mcp-save-btn').addEventListener('click', async function () {
+      const status = document.getElementById('mcp-form-status');
+      const name = document.getElementById('mcp-name').value.trim() || 'MCP Server';
+      const url = document.getElementById('mcp-url').value.trim();
+      if (!url) { status.textContent = 'URL required'; status.className = 'text-xs text-rose-500'; return; }
+      status.textContent = 'Saving…'; status.className = 'text-xs text-slate-500';
+      const headers = mcpBuildHeaders();
+      const res = await MCPClient.testServer({ url: url, headers: headers });
+      const entry = MCPClient.addServer(mcpCurrentEmail(), {
+        name: name,
+        url: url,
+        headers: headers,
+        enabled: true,
+        lastTools: res.ok ? (res.tools || []) : [],
+        lastError: res.ok ? null : (res.error || 'Could not list tools'),
+        lastChecked: new Date().toISOString()
+      });
+      document.getElementById('mcp-form').classList.add('hidden');
+      document.getElementById('mcp-name').value = '';
+      document.getElementById('mcp-url').value = '';
+      document.getElementById('mcp-auth').value = '';
+      status.textContent = '';
+      renderMcpList();
+      void entry;
+    });
+
     document.addEventListener('DOMContentLoaded', () => {
       Settings.applyAll(Settings.load((Auth.current() || {}).email));
       const user = Auth.current();

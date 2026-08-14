@@ -1,4 +1,10 @@
 {
-  "$comment": "MCP client configuration — populated in step 6. Each server entry is a Model Context Protocol endpoint (Senpi, Paybox, FTP Tech, etc.). Left empty in v1 so nothing tries to connect at startup.",
-  "servers": []
+  "$comment": "Static seed / documentation for MCP. Runtime config is per-user in localStorage (prexzy.mcp.v1.<email>) via js/mcp-client.js. Add remote Streamable HTTP MCP endpoints in Settings → MCP Servers.",
+  "servers": [],
+  "notes": {
+    "transport": "Streamable HTTP (JSON-RPC over HTTPS)",
+    "proxy": "/api/mcp",
+    "client": "js/mcp-client.js",
+    "security": "HTTPS only; Authorization / API-key headers allowed; no stdio"
+  }
 }

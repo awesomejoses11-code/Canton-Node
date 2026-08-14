@@ -8,12 +8,12 @@
   const EXECUTABLE_AGENTS = new Set(['image', 'video', 'music', 'tts', 'code', 'html2image', 'mcp']);
 
   const SOURCE_LABELS = {
-    'openrouter':        (d) => 'OpenRouter — ' + (d.model_used || 'fallback model'),
-    'openrouter-online': (d) => 'OpenRouter — with live web search (' + (d.model_used || 'fallback model') + ')',
-    'vinci':             (d) => 'Vinci — ' + (d.model_used || 'forte'),
-    'llm':               (d) => (d.model_used || 'LLM'),
-    'master-capabilities': () => 'Master Agent — tools & quotas',
-    'mcp':               (d) => 'MCP — ' + (d.server_name || d.tool || 'external tool')
+    'openrouter':        function (d) { return 'OpenRouter — ' + (d.model_used || 'fallback model'); },
+    'openrouter-online': function (d) { return 'OpenRouter — with live web search (' + (d.model_used || 'fallback model') + ')'; },
+    'vinci':             function (d) { return 'Vinci — ' + (d.model_used || 'forte'); },
+    'llm':               function (d) { return (d.model_used || 'LLM'); },
+    'master-capabilities': function () { return 'Master Agent — tools & quotas'; },
+    'mcp':               function (d) { return 'MCP — ' + (d.server_name || d.tool || 'external tool'); }
   };
 
   function getPrexzyAPI() {
@@ -25,12 +25,10 @@
     return u ? u.email : null;
   }
 
-  /** Load enabled MCP tools for the current user (best-effort, never throws). */
   async function loadMcpToolsForMaster(email) {
     if (!window.MCPClient || !email) return [];
     try {
       const tools = await MCPClient.getEnabledTools(email);
-      // Keep payload small for the router
       return (tools || []).slice(0, 40).map(function (t) {
         return {
           qualified: t.qualified,
@@ -47,11 +45,77 @@
     }
   }
 
-  function formatMcpToolsHint(tools) {
-    if (!tools || !tools.length) return '';
-    return tools.map(function (t) {
-      return '- ' + t.qualified + ' (' + t.serverName + '): ' + (t.description || t.name);
-    }).join('\n');
+  /**
+   * CoinGecko MCP `execute` requires { code: string } — a TS/JS function:
+   *   async function run(client) { ... }
+   * When the router only picked the tool, synthesize code from the user prompt.
+   */
+  function extractCoinQuery(prompt) {
+    var p = String(prompt || '');
+    // Prefer quoted names, then “price of X”, then residual tokens
+    var m =
+      p.match(/["']([^"']{2,40})["']/) ||
+      p.match(/\b(?:price|value|worth|market\s*cap)\s+of\s+([A-Za-z0-9][A-Za-z0-9 .\-]{1,40}?)(?:\s*[,?.!]|$|\s+using|\s+on|\s+via)/i) ||
+      p.match(/\b([A-Za-z][A-Za-z0-9]{1,30})\s+(?:price|coin|token)\b/i);
+    var raw = m ? m[1] : p;
+    raw = String(raw)
+      .replace(/\busing\s+coingecko\b/ig, '')
+      .replace(/\bcoingecko\b/ig, '')
+      .replace(/\b(what'?s|what is|tell me|please|the|current|usd|price|of|coin|token)\b/ig, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!raw || raw.length < 2) raw = 'bitcoin';
+    return raw.slice(0, 60);
+  }
+
+  function buildCoinGeckoExecuteCode(userPrompt) {
+    var q = extractCoinQuery(userPrompt);
+    var qLit = JSON.stringify(q);
+    // Search → resolve id → simple.price (works for names like "Canton coin")
+    return [
+      'async function run(client) {',
+      '  const query = ' + qLit + ';',
+      '  let id = query.toLowerCase().replace(/\\s+/g, "-");',
+      '  try {',
+      '    const found = await client.search.get({ query });',
+      '    if (found && found.coins && found.coins.length) id = found.coins[0].id;',
+      '  } catch (e) { /* fall back to slug */ }',
+      '  const price = await client.simple.price.get({',
+      '    ids: id,',
+      '    vs_currencies: "usd",',
+      '    include_24hr_change: true,',
+      '    include_market_cap: true',
+      '  });',
+      '  return { query, id, price };',
+      '}'
+    ].join('\n');
+  }
+
+  function ensureMcpArguments(toolName, args, userPrompt, serverName) {
+    var out = Object.assign({}, args || {});
+    var name = String(toolName || '').toLowerCase();
+    var isCoinGecko = /coingecko/i.test(serverName || '');
+
+    if (name === 'execute' && !out.code) {
+      if (isCoinGecko || /price|coin|token|crypto|btc|eth|market/i.test(userPrompt || '')) {
+        out.code = buildCoinGeckoExecuteCode(userPrompt);
+        out.intent = String(userPrompt || 'crypto price lookup').slice(0, 200);
+      } else {
+        out.code =
+          'async function run(client) {\n' +
+          '  // TODO: implement based on: ' + JSON.stringify(String(userPrompt || '').slice(0, 120)) + '\n' +
+          '  return { error: "No code generated for this request" };\n' +
+          '}';
+        out.intent = String(userPrompt || '').slice(0, 200);
+      }
+    }
+
+    if (name === 'search_docs') {
+      if (!out.query) out.query = String(userPrompt || 'API usage').slice(0, 200);
+      if (!out.language) out.language = 'typescript';
+    }
+
+    return out;
   }
 
   function clearAttachment() {
@@ -155,7 +219,7 @@
     const session = History.get(email, sessionId);
     if (!session) return [];
     return session.messages
-      .map(m => {
+      .map(function (m) {
         if (m.role === 'user') return { role: 'user', content: m.content };
         if (m.kind === 'text' && m.content) return { role: 'assistant', content: m.content };
         if (m.kind === 'route' && m.meta) {
@@ -172,6 +236,18 @@
     if (!msg.createdAt) msg.createdAt = new Date().toISOString();
     History.appendMessage(email, currentSessionId, msg);
     renderHistoryList(email);
+  }
+
+  async function parseJsonResponse(res) {
+    const text = await res.text();
+    try {
+      return JSON.parse(text || '{}');
+    } catch (e) {
+      throw new Error(
+        'Server returned non-JSON (' + res.status + '): ' +
+        String(text || '').replace(/\s+/g, ' ').slice(0, 180)
+      );
+    }
   }
 
   async function runMasterAgent() {
@@ -220,7 +296,7 @@
     runBtn.disabled = true;
 
     let refunded = false;
-    const refundOnce = () => { if (!refunded) { Quota.refund('master'); refunded = true; } };
+    const refundOnce = function () { if (!refunded) { Quota.refund('master'); refunded = true; } };
 
     const attachmentInfo = attachedFile ? { name: attachedFile.name, type: attachedFile.type } : null;
 
@@ -231,7 +307,6 @@
         tone: settings.tone || 'friendly'
       };
 
-      // Load MCP tools the same way skills are available to the hub
       showPlain(assistantBox, 'Loading tools…');
       const mcpTools = await loadMcpToolsForMaster(email);
 
@@ -240,14 +315,14 @@
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          message,
+          message: message,
           attachment: attachmentInfo,
           history: priorHistory,
           prefs: prefs,
           mcp_tools: mcpTools
         })
       });
-      const data = await res.json();
+      const data = await parseJsonResponse(res);
 
       if (!res.ok) {
         refundOnce();
@@ -293,9 +368,9 @@
             agent_id: data.agent_id, endpoint: data.endpoint, params: data.params,
             reasoning: data.reasoning, fallback_note: data.fallback_note,
             executed: false, executionSummary: null,
-            // MCP-specific fields from router
             mcp_server_id: data.mcp_server_id || (data.params && data.params.serverId) || null,
-            mcp_tool: data.mcp_tool || (data.params && data.params.tool) || null
+            mcp_tool: data.mcp_tool || (data.params && data.params.tool) || null,
+            userPrompt: message
           },
           createdAt: new Date().toISOString()
         };
@@ -360,7 +435,6 @@
     }
   }
 
-  /** Execute an MCP tool route (same UX as Prexzy Execute). */
   function appendMcpExecuteAction(bubbleEl, routeMsg, email) {
     const actions = document.createElement('div');
     actions.className = 'mt-2 pt-2 border-t border-slate-200 dark:border-slate-700 flex items-center gap-2 font-sans';
@@ -390,8 +464,9 @@
       const params = meta.params || {};
       const serverId = meta.mcp_server_id || params.serverId;
       const toolName = meta.mcp_tool || params.tool || params.name;
-      // Arguments for the tool (everything except routing keys)
-      const args = Object.assign({}, params);
+      const userPrompt = meta.userPrompt || '';
+
+      var args = Object.assign({}, params);
       delete args.serverId;
       delete args.tool;
       delete args.name;
@@ -413,6 +488,9 @@
         bubbleEl.appendChild(errBox);
         return;
       }
+
+      // Fill required tool args (CoinGecko execute needs `code`)
+      args = ensureMcpArguments(toolName, args, userPrompt, server.name);
 
       const resultArea = document.createElement('div');
       resultArea.className = 'mt-2 font-sans';
@@ -449,7 +527,6 @@
   function formatMcpResult(result) {
     if (result == null) return '(empty result)';
     if (typeof result === 'string') return result;
-    // Standard MCP tools/call shape: { content: [ { type, text } ] }
     if (result.content && Array.isArray(result.content)) {
       return result.content.map(function (c) {
         if (c.type === 'text' && c.text) return c.text;
@@ -477,7 +554,7 @@
     actions.append(btn, note);
     bubbleEl.appendChild(actions);
 
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', async function () {
       const endpointKey = routeMsg.meta.endpoint;
       const api = getPrexzyAPI();
       if (!api) {
@@ -662,6 +739,11 @@
       'reasoning: ' + message.meta.reasoning +
       (message.meta.fallback_note ? '\n\n⚠ ' + message.meta.fallback_note : '');
     showPlain(box, text);
+
+    // Keep userPrompt on route for MCP code synthesis after history reload
+    if (message.meta && !message.meta.userPrompt && userPrompt) {
+      message.meta.userPrompt = userPrompt;
+    }
 
     if (message.meta.executed && message.meta.executionSummary) {
       var s = message.meta.executionSummary;

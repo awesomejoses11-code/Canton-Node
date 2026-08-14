@@ -141,7 +141,7 @@
             </div>
             <div class="flex items-end gap-2">
               <button id="master-attach" type="button" class="p-2 text-slate-400 hover:text-brand-600" title="Attach">📎</button>
-              <input id="master-file-input" type="file" class="hidden" accept="image/*" />
+              <input id="master-file-input" type="file" class="hidden" accept="image/*,.pdf,.txt,.md,.csv,.json,.html,.htm,text/plain,application/pdf" />
               <textarea id="master-input" rows="1" placeholder="e.g. Make a sunset image, then turn it into a short video…"
                         class="flex-1 resize-none rounded-xl border border-slate-300 dark:border-slate-600 dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 max-h-[200px]"></textarea>
               <button id="master-run" type="button"
@@ -168,7 +168,7 @@
       <div id="tab-content-settings" class="tab-content hidden space-y-6">
         <section class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-5">
           <h2 class="text-base font-display font-semibold mb-1">User Customization</h2>
-          <p class="text-xs text-slate-500 dark:text-slate-400 mb-6">Stored per account on this device. Applied immediately on save.</p>
+          <p class="text-xs text-slate-500 dark:text-slate-400 mb-6">Synced to Neon per account — available on any device after login.</p>
           <form id="settings-form" class="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-3xl">
             <div>
               <label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Display Name</label>
@@ -303,7 +303,7 @@
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label class="block text-xs font-medium mb-1">Name</label>
-                <input id="mcp-name" type="text" placeholder="e.g. GitHub tools" class="w-full rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
+                <input id="mcp-name" type="text" placeholder="e.g. GitHub tools" class="w-full rounded-lg border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
               </div>
               <div>
                 <label class="block text-xs font-medium mb-1">Server URL (HTTPS)</label>
@@ -400,9 +400,20 @@
       if (memEl) memEl.checked = s.memoryEnabled !== false;
       if (window.loadDocsIntoSettings) loadDocsIntoSettings();
     }
-    function enterApp(user) {
-      const settings = Settings.load(user.email);
+    async function enterApp(user) {
       Quota.setScope(user.email);
+      // Pull server-side settings + chat history when a Neon token exists
+      var settings = Settings.load(user.email);
+      try {
+        if (user.token && Settings.syncFromServer) {
+          settings = await Settings.syncFromServer(user.email);
+        }
+      } catch (_) {}
+      try {
+        if (user.token && window.History && History.syncFromServer) {
+          await History.syncFromServer(user.email);
+        }
+      } catch (_) {}
       Settings.applyAll(settings);
       populateSettingsForm(user, settings);
       if (window.Hub && Hub.refresh) Hub.refresh();
@@ -425,7 +436,7 @@
         } else {
           user = await Auth.login(email, password, remember);
         }
-        enterApp(user);
+        await enterApp(user);
       } catch (err) {
         showAuthError(err.message);
       }
@@ -629,10 +640,13 @@
       renderMcpList();
     });
 
-    document.addEventListener('DOMContentLoaded', () => {
-      Settings.applyAll(Settings.load((Auth.current() || {}).email));
+    document.addEventListener('DOMContentLoaded', async () => {
+      try {
+        if (Auth.refresh) await Auth.refresh();
+      } catch (_) {}
       const user = Auth.current();
-      if (user) enterApp(user);
+      Settings.applyAll(Settings.load((user || {}).email));
+      if (user) await enterApp(user);
       switchTab('models');
     });
   </script>

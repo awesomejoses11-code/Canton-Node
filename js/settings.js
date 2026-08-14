@@ -1,13 +1,11 @@
 /* =========================================================================
  * settings.js — Per-user customization store
  *
- * NEW in this build. Settings are namespaced per account
- * (`prexzy.settings.v1.<email>`) so each user on a shared device keeps
- * their own theme, defaults and workflow preferences.
+ * Settings are namespaced per account (`prexzy.settings.v1.<email>`) so each
+ * user on a shared device keeps their own theme, tone, and defaults.
  *
- * `Settings.applyAll()` is the single place that pushes settings into the
- * DOM: theme class on <html>, accent CSS variables, compact-card class on
- * <body>. Call it after login and after every save.
+ * Settings.applyAll() pushes visual settings into the DOM. Call after login
+ * and after every save.
  * ========================================================================= */
 
 (function (global) {
@@ -17,14 +15,24 @@
 
   const DEFAULTS = Object.freeze({
     displayName:  '',           // falls back to the account username
+    tone:         'friendly',   // Master Agent reply tone
     theme:        'system',     // 'system' | 'light' | 'dark'
     accent:       'indigo',     // see ACCENTS
     codeLang:     'python',     // default language for the Code agent
     imageSize:    '1024x1024',  // default size for image agents
     ttsVoice:     'olivia',     // default voice for the TTS agent
-    routingMode:  'auto',       // 'auto' (GPT-5.4 router) | 'manual'
+    routingMode:  'auto',       // 'auto' | 'manual'
     confirmHeavy: true,         // confirm before image/music/video calls
     compactCards: false         // denser agent cards
+  });
+
+  // Allowed Master Agent tones (stored value → instruction fragment)
+  const TONES = Object.freeze({
+    friendly:     'warm, approachable, and encouraging',
+    professional: 'professional, clear, and businesslike',
+    concise:      'brief and to the point — minimize filler',
+    technical:    'precise and technical; prefer exact terms',
+    playful:      'light, witty, and informal without being unhelpful'
   });
 
   // Accent palettes — RGB triplets consumed by the Tailwind brand color vars.
@@ -36,37 +44,45 @@
     amber:   { 50: '255 251 235', 500: '245 158 11',  600: '217 119 6',   700: '180 83 9'   }
   });
 
-  function key(email) { return `${PREFIX}.${String(email || 'anon').toLowerCase()}`; }
+  function key(email) { return PREFIX + '.' + String(email || 'anon').toLowerCase(); }
 
   const Settings = {
     DEFAULTS,
+    TONES,
 
-    /** Load settings for an account, merged over defaults. */
-    load(email) {
-      let saved = {};
+    displayNameFor: function (email, user) {
+      var s = this.load(email);
+      return (s.displayName && s.displayName.trim()) || (user && user.username) || 'there';
+    },
+
+    toneInstruction: function (email) {
+      var s = this.load(email);
+      return TONES[s.tone] || TONES.friendly;
+    },
+
+    load: function (email) {
+      var saved = {};
       try { saved = JSON.parse(localStorage.getItem(key(email))) || {}; } catch (_) {}
       return Object.assign({}, DEFAULTS, saved);
     },
 
-    /** Persist settings for an account. */
-    save(email, settings) {
+    save: function (email, settings) {
       try { localStorage.setItem(key(email), JSON.stringify(settings)); } catch (_) {}
     },
 
-    /** Push every visual setting into the DOM. */
-    applyAll(s) {
+    applyAll: function (s) {
       s = Object.assign({}, DEFAULTS, s);
       this.applyTheme(s.theme);
       this.applyAccent(s.accent);
       document.body.classList.toggle('compact-cards', !!s.compactCards);
     },
 
-    /** 'system' follows prefers-color-scheme (and live OS changes). */
-    applyTheme(theme) {
-      const root = document.documentElement;
-      const darkQuery = global.matchMedia('(prefers-color-scheme: dark)');
-      const resolve = () => {
-        const dark = theme === 'dark' || (theme === 'system' && darkQuery.matches);
+    applyTheme: function (theme) {
+      var root = document.documentElement;
+      var darkQuery = global.matchMedia('(prefers-color-scheme: dark)');
+      var self = this;
+      var resolve = function () {
+        var dark = theme === 'dark' || (theme === 'system' && darkQuery.matches);
         root.classList.toggle('dark', dark);
       };
       if (this._themeListener) darkQuery.removeEventListener('change', this._themeListener);
@@ -75,13 +91,12 @@
       resolve();
     },
 
-    /** Swap the brand color CSS variables Tailwind reads. */
-    applyAccent(accent) {
-      const palette = ACCENTS[accent] || ACCENTS.indigo;
-      const root = document.documentElement;
-      for (const [shade, rgb] of Object.entries(palette)) {
-        root.style.setProperty(`--brand-${shade}`, rgb);
-      }
+    applyAccent: function (accent) {
+      var palette = ACCENTS[accent] || ACCENTS.indigo;
+      var root = document.documentElement;
+      Object.keys(palette).forEach(function (shade) {
+        root.style.setProperty('--brand-' + shade, palette[shade]);
+      });
     }
   };
 

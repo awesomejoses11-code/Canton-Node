@@ -2,9 +2,24 @@
 
 Private multi-tool generative hub. Vanilla HTML + Tailwind CDN + plain JS, deployed on Vercel with zero build step.
 
-The Master Agent routes natural-language requests (chat, image, video, code, TTS, …) and executes them through resilient fallback chains. Specialist agent cards were removed — everything goes through Master; quotas live on the **Limits** tab.
+The **Master Agent** routes natural-language requests (chat, image, video, music, TTS, code, …) and runs them through resilient fallback chains. Personalization (display name + reply tone) is stored per account and injected into Master chat answers.
 
 **Live:** [canton-node.vercel.app](https://canton-node.vercel.app) · **Repo:** [awesomejoses11-code/Canton-Node](https://github.com/awesomejoses11-code/Canton-Node)
+
+---
+
+## Features
+
+- **Master Agent router** — heuristic first, then Vinci → OpenRouter → Hugging Face
+- **Media chains**
+  - Image: Hugging Face FLUX → Prexzy
+  - Video: MuAPI → Pixazo → Pyramid Flow → Prexzy
+  - Music / TTS: Prexzy endpoints via Execute
+- **Personalization** — display name + Master tone (friendly / professional / concise / technical / playful)
+- **Session memory** — last turns sent with each chat request
+- **Edit prompt / Regenerate / Copy** under assistant replies
+- **Per-user daily quotas** (localStorage, midnight reset)
+- **Chat history drawer** — local sessions per account
 
 ---
 
@@ -12,147 +27,100 @@ The Master Agent routes natural-language requests (chat, image, video, code, TTS
 
 ```
 /
-├── index.html              # Auth gate + Agents / Limits / Settings tabs
-├── favicon.svg             # Neon circuit badge
+├── index.html              # Auth + Agents / Limits / Settings
+├── favicon.svg
 ├── vercel.json
-├── tools.json              # Endpoint registry hints
-├── skills.json             # Skill index → skills/*/SKILL.md
-├── mcp-config.json         # MCP servers (optional)
 ├── api/
-│   ├── master.js           # Router: heuristic → Vinci → OpenRouter → HF
-│   ├── image.js            # Image: HF FLUX.1-schnell → Prexzy
-│   ├── video.js            # Video: Pixazo LTX → Pyramid Flow → Prexzy
-│   ├── video-status.js     # Pixazo task_id polling (key stays server-side)
-│   └── log.js              # Optional client event log
+│   ├── master.js           # Router + chat; accepts prefs { displayName, tone }
+│   ├── image.js            # HF FLUX → Prexzy
+│   ├── video.js            # MuAPI → Pixazo → Pyramid → Prexzy
+│   ├── video-status.js     # Async video poll helper
+│   └── log.js
 ├── js/
-│   ├── quota.js            # Per-user daily limits (localStorage, midnight refresh)
-│   ├── auth.js             # Sign-in / register (salted SHA-256, local)
-│   ├── settings.js         # Theme, accent, defaults
-│   ├── api.js              # PrexzyAPI: call / callResilient / generateImage / generateVideo
-│   ├── skill-loader.js     # Loads skills.json + SKILL.md frontmatter
-│   ├── hub.js              # Quota dashboard + media wire (image.* / video.* → /api)
-│   ├── history.js          # Chat history drawer
-│   ├── output-actions.js   # Download / Copy media + code + Copy/Edit/Refresh
-│   ├── prexzy-shim.js      # Safety net if api.js fails to load
-│   └── master-client.js    # Master UI: route → Execute → media render
-└── skills/
-    ├── image-generator/
-    ├── video-generator/
-    ├── music-generator/
-    ├── tts/
-    └── code/
+│   ├── quota.js
+│   ├── auth.js
+│   ├── settings.js         # Theme, accent, displayName, tone, defaults
+│   ├── api.js              # PrexzyAPI (image/video/music/tts)
+│   ├── history.js
+│   ├── output-actions.js   # Copy / Edit prompt / Regenerate / media download
+│   ├── master-client.js    # Master UI + Execute + prefs payload
+│   ├── hub.js
+│   └── prexzy-shim.js
+└── README.md
 ```
-
----
-
-## Generation chains
-
-| Feature | Primary | Backups |
-|---------|---------|---------|
-| **Routing** (Master) | Heuristic keywords, then **Vinci** (Forte/Mezzo) | OpenRouter free models → HF Qwen/Llama |
-| **Image** | Hugging Face **FLUX.1-schnell** | Prexzy (genimage → txt2img → dalle → aiwriter) |
-| **Video** | **Pixazo LTX** (async + poll) | Pyramid Flow (HF) → Prexzy |
-
-Client helpers:
-
-```js
-await PrexzyAPI.generateImage({ prompt, size }, { loadingEl })
-await PrexzyAPI.generateVideo({ prompt, duration: 5 }, { loadingEl, poll: true })
-```
-
-`hub.js` also redirects `callResilient('image.*' | 'video.*')` through those helpers so skills never hit Prexzy first.
-
----
-
-## Daily quotas (per signed-in user)
-
-Stored in `localStorage` under `prexzy.quota.v2.<email>`, reset at local midnight.
-
-| Bucket | Limit / day |
-|--------|-------------|
-| Master Agent routing | **80** |
-| Text / chat | 80 |
-| TTS | 50 |
-| Code | 50 |
-| Web | 30 |
-| Image → HTML | 25 |
-| HTML → Image | 15 |
-| **Image** | **12** |
-| Music | 8 |
-| **Video** | **4** |
-
-Failed requests refund the consumed unit.
 
 ---
 
 ## Environment variables (Vercel)
 
-| Variable | Required | Used for |
-|----------|----------|----------|
-| **`VINCI_API_KEY`** | **Recommended (primary router)** | Master Agent routing + chat (Vinci Forte/Mezzo, OpenAI-compatible) |
-| `OPENROUTER_API_KEY` | Backup router | Free models when Vinci is unset or fails |
-| `HF_TOKEN` | Image + backup router | FLUX images, Pyramid video, HF chat fallback |
-| `PIXAZO_API_KEY` | Video | Pixazo LTX primary path |
-| `MUAPI_API_KEY` | Optional later | Paid multi-model image/video (MuAPI) — not wired yet |
+| Variable | Purpose |
+|----------|---------|
+| `VINCI_API_KEY` | Primary chat / route LLM (OpenAI-compatible) |
+| `OPENROUTER_API_KEY` | Fallback free models |
+| `HF_TOKEN` | Hugging Face (chat fallback + FLUX images) |
+| `MUAPI_API_KEY` | Primary video generation |
+| `PIXAZO_API_KEY` | Video fallback |
+| Optional Prexzy / Pyramid keys | Final media fallbacks |
 
-**Master routing order:** heuristic keywords → **Vinci** → OpenRouter free → Hugging Face.
-
-No Prexzy API key is required for the public endpoints used here.
-
-### Vinci setup
-
-1. Issue a key at [platform.getsimpledirect.com](https://platform.getsimpledirect.com) (`vinci_live_…`).
-2. In Vercel → Project → Settings → Environment Variables, add `VINCI_API_KEY`.
-3. Redeploy. Docs: [developers.getsimpledirect.com/getting-started](https://developers.getsimpledirect.com/getting-started).
+Set them in the Vercel project → Settings → Environment Variables, then redeploy.
 
 ---
 
-## Local development
+## Personalization
 
-```bash
-# Full stack (UI + /api/* serverless)
-npx --yes vercel dev
+Open **Settings** after sign-in:
 
-# Static UI only (master / image / video APIs will 404)
-python3 -m http.server 8080
+1. **Display Name** — Master addresses you by this name in chat.
+2. **Master Agent Tone** — shapes how answers are written:
+   - Friendly · Professional · Concise · Technical · Playful
+
+Saved per account on the device (`localStorage`). Each Master chat request sends `prefs: { displayName, tone }` to `/api/master`, which appends persona instructions to the system prompt.
+
+Other settings: theme, accent, default image size, TTS voice, code language, confirm heavy calls, routing mode.
+
+---
+
+## How Master works
+
+```
+You type a request
+  → heuristic route (image / video / music / capabilities / …)
+  → else LLM route (Vinci → OpenRouter → HF)
+  → chat/web: answer on server (with name + tone + history)
+  → media tools: route card → press ▶ Execute → tool runs (quota)
 ```
 
-Open the URL Vercel prints (usually `http://localhost:3000`).
+Under every reply: **Copy** · **Edit prompt** · **Regenerate**.
 
 ---
 
-## Deploy
+## Local / deploy
+
+Static site + serverless `api/*`. No build step.
 
 ```bash
-npx --yes vercel deploy --prod
+# optional local check
+npx serve .
+# or link the repo to Vercel and deploy
 ```
 
-Set the env vars above in the Vercel project settings, then redeploy.
-
 ---
 
-## Auth & settings
+## Quotas (default daily)
 
-- **Auth** is local-only: accounts and salted password hashes live in `localStorage`. “Keep me signed in” uses a 30-day session; otherwise sessionStorage for the tab.
-- **Settings:** display name, theme (system/light/dark), accent color, default code language, image size, TTS voice, routing mode (auto/manual), confirm-before-heavy-calls.
+| Feature | Limit |
+|---------|------:|
+| Master routing | 80 |
+| Image | 12 |
+| Video | 4 |
+| Music | 8 |
+| TTS | 50 |
+| Code | 50 |
 
----
-
-## Skills
-
-`skills.json` points at `skills/*/SKILL.md` files (YAML frontmatter + body). `js/skill-loader.js` loads them at runtime. Image and video skills document the server chains above; execution still goes through Master + `PrexzyAPI`.
-
----
-
-## Notes
-
-- Specialist homepage cards were removed; Master routes everything.
-- Media responses (including nested Prexzy/DALL·E `image_url` shapes) are walked recursively so images actually render.
-- `output-actions.js` adds **Download** / **Copy image|link** under media and **Copy / Edit / Refresh** under assistant bubbles.
-- Video generation is slow (often 30–90s) and scarce (4/day) — loading UI is required.
+Shown and enforced on the **Limits** tab.
 
 ---
 
 ## License
 
-See [LICENSE](./LICENSE).
+Private build — use and modify for your own deployment.

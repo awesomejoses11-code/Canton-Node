@@ -1,8 +1,8 @@
 /* =========================================================================
- * api/master.js — Master Agent router (simplified)
+ * api/master.js — Master Agent router
  *
  * Priority: heuristic → Vinci → OpenRouter → HF
- * Chat/web: uses client-sent history[] + prefs { displayName, tone }
+ * Chat/web: history[] + prefs { displayName, tone }
  * MCP: client sends mcp_tools[] from MCPClient.getEnabledTools(email)
  * ========================================================================= */
 
@@ -57,7 +57,7 @@ const ENDPOINT_TO_AGENT = {
 const SHARED_CHAT_ENDPOINT_AGENTS = ['image2html', 'web', 'chat'];
 
 function buildSystemPrompt(mcpTools) {
-  let base =
+  var base =
     'You are the Master Agent router for Canton Node, a multi-tool generative hub. ' +
     'You do NOT answer the user yourself — you only choose which tool to run. ' +
     'Reply with ONLY a JSON object (no markdown, no prose):\n' +
@@ -90,7 +90,7 @@ function buildSystemPrompt(mcpTools) {
 }
 
 function heuristicRoute(message, mcpTools) {
-  const m = message.toLowerCase();
+  var m = message.toLowerCase();
   if (/\b(video|clip|animation|footage|\.mp4|text.?to.?video|generate (a )?video)\b/.test(m))
     return { agent_id: 'video', endpoint: 'video.create', params: { prompt: message }, reasoning: 'Heuristic: video' };
   if (/\b(image|logo|picture|photo|draw|illustration|txt2img|text.?to.?image|generate (an? )?(img|image))\b/.test(m))
@@ -110,11 +110,16 @@ function heuristicRoute(message, mcpTools) {
   if (/\b(what can you do|your (tools|capabilities|features)|list (your )?tools|use (the )?tools|tools? you have|who are you|what are you)\b/.test(m))
     return { agent_id: 'chat', endpoint: 'chat.capabilities', params: { prompt: message }, reasoning: 'Heuristic: capabilities' };
 
-  // Explicit MCP qualified name in the message
+  // Prefer MCP when user names CoinGecko / connected server or crypto price with MCP context
   if (mcpTools && mcpTools.length) {
-    for (let i = 0; i < mcpTools.length; i++) {
-      const t = mcpTools[i];
-      if (t.qualified && m.includes(String(t.qualified).toLowerCase())) {
+    var wantsMcp =
+      /\b(coingecko|mcp)\b/i.test(message) ||
+      (/\b(price|market cap|token|crypto|bitcoin|btc|ethereum|eth)\b/i.test(message) &&
+        mcpTools.some(function (t) { return /coingecko/i.test(t.serverName || t.qualified || ''); }));
+
+    for (var i = 0; i < mcpTools.length; i++) {
+      var t = mcpTools[i];
+      if (t.qualified && m.indexOf(String(t.qualified).toLowerCase()) !== -1) {
         return {
           agent_id: 'mcp',
           endpoint: 'mcp.call',
@@ -122,14 +127,17 @@ function heuristicRoute(message, mcpTools) {
           reasoning: 'Heuristic: explicit MCP tool ' + t.qualified
         };
       }
-      if (t.name && new RegExp('\\bmcp[:\\s]+' + escapeRegExp(t.name) + '\\b', 'i').test(message)) {
-        return {
-          agent_id: 'mcp',
-          endpoint: 'mcp.call',
-          params: { serverId: t.serverId, tool: t.name },
-          reasoning: 'Heuristic: MCP tool name ' + t.name
-        };
-      }
+    }
+
+    if (wantsMcp) {
+      // CoinGecko exposes execute + search_docs — default to execute for price queries
+      var pick = mcpTools.find(function (x) { return x.name === 'execute'; }) || mcpTools[0];
+      return {
+        agent_id: 'mcp',
+        endpoint: 'mcp.call',
+        params: { serverId: pick.serverId, tool: pick.name },
+        reasoning: 'Heuristic: MCP for crypto/data query via ' + (pick.serverName || pick.qualified)
+      };
     }
   }
   return null;
@@ -141,10 +149,10 @@ function escapeRegExp(s) {
 
 function extractRouteJson(raw) {
   if (!raw) return null;
-  let s = String(raw).trim().replace(/```(?:json)?/gi, '').trim();
+  var s = String(raw).trim().replace(/```(?:json)?/gi, '').trim();
   try { return JSON.parse(s); } catch (_) {}
-  const start = s.indexOf('{');
-  const end = s.lastIndexOf('}');
+  var start = s.indexOf('{');
+  var end = s.lastIndexOf('}');
   if (start >= 0 && end > start) {
     try { return JSON.parse(s.slice(start, end + 1)); } catch (_) {}
   }
@@ -162,7 +170,7 @@ async function safeText(resp) {
 }
 
 function authHeaders(provider, apiKey) {
-  const h = {
+  var h = {
     'content-type': 'application/json',
     authorization: 'Bearer ' + apiKey
   };
@@ -174,26 +182,26 @@ function authHeaders(provider, apiKey) {
 }
 
 async function callChat(provider, modelCfg, messages, maxTokens) {
-  const apiKey = process.env[provider.envKey];
+  var apiKey = process.env[provider.envKey];
   if (!apiKey) throw new Error(provider.envKey + ' not set');
-  const body = {
+  var body = {
     model: modelCfg.model,
     messages: messages,
     max_tokens: maxTokens || 400
   };
   if (provider.id === 'openrouter') body.response_format = { type: 'json_object' };
-  const resp = await fetch(provider.url, {
+  var resp = await fetch(provider.url, {
     method: 'POST',
     headers: authHeaders(provider, apiKey),
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(45000)
   });
   if (!resp.ok) {
-    const detail = await safeText(resp);
+    var detail = await safeText(resp);
     throw new Error('HTTP ' + resp.status + (detail ? ' — ' + detail.slice(0, 180) : ''));
   }
-  const data = await resp.json();
-  const msg = data && data.choices && data.choices[0] && data.choices[0].message;
+  var data = await resp.json();
+  var msg = data && data.choices && data.choices[0] && data.choices[0].message;
   return (msg && typeof msg.content === 'string' ? msg.content.trim() : '') || null;
 }
 
@@ -202,13 +210,14 @@ async function tryRouteWithProvider(provider, message, systemPrompt, errors) {
     errors.push(provider.label + ': ' + provider.envKey + ' not set');
     return null;
   }
-  for (const m of provider.models) {
+  for (var mi = 0; mi < provider.models.length; mi++) {
+    var m = provider.models[mi];
     try {
-      const content = await callChat(provider, m, [
+      var content = await callChat(provider, m, [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: message }
       ], 400);
-      const parsed = extractRouteJson(content);
+      var parsed = extractRouteJson(content);
       if (isValidRoute(parsed)) return { route: parsed, modelUsed: m.label, providerId: provider.id };
       errors.push(m.label + ': invalid route');
     } catch (e) {
@@ -219,16 +228,18 @@ async function tryRouteWithProvider(provider, message, systemPrompt, errors) {
 }
 
 function sanitizeParams(params) {
-  const allowed = new Set([
-    'prompt', 'text', 'code', 'from', 'voice', 'size', 'steps', 'style',
-    'image', 'lyrics', 'title', 'html', 'width', 'height', 'stdin', 'web', 'duration',
-    'serverId', 'tool', 'name', 'qualified'
-  ]);
-  const out = {};
+  var allowed = {
+    prompt: 1, text: 1, code: 1, from: 1, voice: 1, size: 1, steps: 1, style: 1,
+    image: 1, lyrics: 1, title: 1, html: 1, width: 1, height: 1, stdin: 1, web: 1, duration: 1,
+    serverId: 1, tool: 1, name: 1, qualified: 1
+  };
+  var out = {};
   if (!params || typeof params !== 'object') return out;
-  for (const [k, v] of Object.entries(params)) {
-    // Pass through MCP tool args (string/number/boolean/plain objects)
-    if (allowed.has(k) || k.startsWith('arg_') || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+  var keys = Object.keys(params);
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    var v = params[k];
+    if (allowed[k] || k.indexOf('arg_') === 0 || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
       if (v !== undefined && v !== null && v !== '') out[k] = v;
     }
   }
@@ -236,7 +247,7 @@ function sanitizeParams(params) {
 }
 
 function buildCapabilitiesText(mcpTools) {
-  let text =
+  var text =
     'I am the **Canton Node Master Agent** — a router and orchestrator for this hub, not a text-only chatbot.\n\n' +
     'When you ask for media or code, I **route** the request to the right tool. Available tools:\n\n' +
     '| Tool | Example prompt | Daily quota |\n' +
@@ -258,7 +269,8 @@ function buildCapabilitiesText(mcpTools) {
     text += '\n_No MCP servers connected. Add them under Settings → MCP Servers._\n';
   }
 
-  text +=\n    '\n**How to use a tool:** describe what you want (e.g. draw a neon city skyline). ' +
+  text +=
+    '\n**How to use a tool:** describe what you want (e.g. draw a neon city skyline). ' +
     'I return a route card; for image/video/music press **Execute** (uses that tool quota).\n\n' +
     'I will not pretend I lack these tools. If something fails, use **Edit prompt** or **Regenerate**.';
   return text;
@@ -274,10 +286,10 @@ const TONE_MAP = {
 
 function buildPersonaPrompt(prefs) {
   prefs = prefs || {};
-  const name = String(prefs.displayName || '').trim();
-  const toneKey = String(prefs.tone || 'friendly').toLowerCase();
-  const tone = TONE_MAP[toneKey] || TONE_MAP.friendly;
-  let s = 'Reply in a ' + tone + ' tone.';
+  var name = String(prefs.displayName || '').trim();
+  var toneKey = String(prefs.tone || 'friendly').toLowerCase();
+  var tone = TONE_MAP[toneKey] || TONE_MAP.friendly;
+  var s = 'Reply in a ' + tone + ' tone.';
   if (name) {
     s += ' The user prefers to be addressed as "' + name.replace(/["\\]/g, '') + '". Use their name naturally when greeting or when it fits; do not overuse it.';
   }
@@ -299,200 +311,207 @@ function normalizeMcpTools(raw) {
 }
 
 module.exports = async function handler(req, res) {
-  if (req.method !== 'POST') {
-    res.status(405).json({ error: 'Method not allowed. Use POST.' });
-    return;
-  }
-
-  if (!LLM_CHAIN.some(function (p) { return !!process.env[p.envKey]; })) {
-    res.status(500).json({
-      error: 'No router API keys configured. Set VINCI_API_KEY and/or OPENROUTER_API_KEY and/or HF_TOKEN.'
-    });
-    return;
-  }
-
-  let message;
-  let history = [];
-  let prefs = {};
-  let mcpTools = [];
   try {
-    const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-    message = String(body.message || '').trim();
-    prefs = (body.prefs && typeof body.prefs === 'object') ? body.prefs : {};
-    mcpTools = normalizeMcpTools(body.mcp_tools);
-    if (Array.isArray(body.history)) {
-      history = body.history
-        .filter(function (m) {
-          return m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string';
-        })
-        .slice(-12)
-        .map(function (m) {
-          return { role: m.role, content: String(m.content).slice(0, 2000) };
-        });
+    if (req.method !== 'POST') {
+      res.status(405).json({ error: 'Method not allowed. Use POST.' });
+      return;
     }
-  } catch (_) {
-    res.status(400).json({ error: 'Invalid JSON body.' });
-    return;
-  }
-  if (!message) {
-    res.status(400).json({ error: 'Missing "message".' });
-    return;
-  }
-  if (message.length > 4000) {
-    res.status(400).json({ error: 'Message too long (max 4000 characters).' });
-    return;
-  }
 
-  const systemPrompt = buildSystemPrompt(mcpTools);
-  const routeErrors = [];
-  let route = null;
-  let modelUsed = null;
-  let fallbackUsed = false;
-  let providerId = null;
+    if (!LLM_CHAIN.some(function (p) { return !!process.env[p.envKey]; })) {
+      res.status(500).json({
+        error: 'No router API keys configured. Set VINCI_API_KEY and/or OPENROUTER_API_KEY and/or HF_TOKEN.'
+      });
+      return;
+    }
 
-  route = heuristicRoute(message, mcpTools);
-  if (route) {
-    modelUsed = 'heuristic';
-    providerId = 'heuristic';
-  }
+    var message;
+    var history = [];
+    var prefs = {};
+    var mcpTools = [];
+    try {
+      var body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+      message = String(body.message || '').trim();
+      prefs = (body.prefs && typeof body.prefs === 'object') ? body.prefs : {};
+      mcpTools = normalizeMcpTools(body.mcp_tools);
+      if (Array.isArray(body.history)) {
+        history = body.history
+          .filter(function (m) {
+            return m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string';
+          })
+          .slice(-12)
+          .map(function (m) {
+            return { role: m.role, content: String(m.content).slice(0, 2000) };
+          });
+      }
+    } catch (_) {
+      res.status(400).json({ error: 'Invalid JSON body.' });
+      return;
+    }
+    if (!message) {
+      res.status(400).json({ error: 'Missing "message".' });
+      return;
+    }
+    if (message.length > 4000) {
+      res.status(400).json({ error: 'Message too long (max 4000 characters).' });
+      return;
+    }
 
-  if (!route) {
-    for (const provider of LLM_CHAIN) {
-      const hit = await tryRouteWithProvider(provider, message, systemPrompt, routeErrors);
-      if (hit) {
-        route = hit.route;
-        modelUsed = hit.modelUsed;
-        providerId = hit.providerId;
-        fallbackUsed = provider.id !== 'vinci';
-        break;
+    var systemPrompt = buildSystemPrompt(mcpTools);
+    var routeErrors = [];
+    var route = null;
+    var modelUsed = null;
+    var fallbackUsed = false;
+    var providerId = null;
+
+    route = heuristicRoute(message, mcpTools);
+    if (route) {
+      modelUsed = 'heuristic';
+      providerId = 'heuristic';
+    }
+
+    if (!route) {
+      for (var pi = 0; pi < LLM_CHAIN.length; pi++) {
+        var provider = LLM_CHAIN[pi];
+        var hit = await tryRouteWithProvider(provider, message, systemPrompt, routeErrors);
+        if (hit) {
+          route = hit.route;
+          modelUsed = hit.modelUsed;
+          providerId = hit.providerId;
+          fallbackUsed = provider.id !== 'vinci';
+          break;
+        }
       }
     }
-  }
 
-  if (!route) {
-    res.status(502).json({
-      error: 'All routers failed (heuristic + Vinci + OpenRouter + Hugging Face).',
-      detail: routeErrors.join(' | ')
-    });
-    return;
-  }
+    if (!route) {
+      res.status(502).json({
+        error: 'All routers failed (heuristic + Vinci + OpenRouter + Hugging Face).',
+        detail: routeErrors.join(' | ')
+      });
+      return;
+    }
 
-  let fallbackNote = null;
-  if (providerId && providerId !== 'heuristic' && providerId !== 'vinci') {
-    fallbackNote = 'Primary Vinci router skipped or failed — used ' + modelUsed + '.';
-  }
+    var fallbackNote = null;
+    if (providerId && providerId !== 'heuristic' && providerId !== 'vinci') {
+      fallbackNote = 'Primary Vinci router skipped or failed — used ' + modelUsed + '.';
+    }
 
-  // Normalize MCP routes from the LLM
-  if (route.agent_id === 'mcp' || (typeof route.endpoint === 'string' && route.endpoint.indexOf('mcp') === 0)) {
-    route.agent_id = 'mcp';
-    route.endpoint = 'mcp.call';
-    const p = route.params && typeof route.params === 'object' ? route.params : {};
-    // Resolve tool from qualified name if needed
-    if ((!p.serverId || !p.tool) && p.qualified && mcpTools.length) {
-      const match = mcpTools.find(function (t) { return t.qualified === p.qualified; });
-      if (match) {
-        p.serverId = match.serverId;
-        p.tool = match.name;
+    if (route.agent_id === 'mcp' || (typeof route.endpoint === 'string' && route.endpoint.indexOf('mcp') === 0)) {
+      route.agent_id = 'mcp';
+      route.endpoint = 'mcp.call';
+      var p = route.params && typeof route.params === 'object' ? route.params : {};
+      if ((!p.serverId || !p.tool) && p.qualified && mcpTools.length) {
+        var match = mcpTools.find(function (t) { return t.qualified === p.qualified; });
+        if (match) {
+          p.serverId = match.serverId;
+          p.tool = match.name;
+        }
       }
+      if ((!p.serverId || !p.tool) && p.tool && mcpTools.length) {
+        var match2 = mcpTools.find(function (t) { return t.name === p.tool; });
+        if (match2) p.serverId = match2.serverId;
+      }
+      route.params = p;
     }
-    if ((!p.serverId || !p.tool) && p.tool && mcpTools.length) {
-      const match = mcpTools.find(function (t) { return t.name === p.tool; });
-      if (match) p.serverId = match.serverId;
+
+    var owner = ENDPOINT_TO_AGENT[route.endpoint];
+    var validForShared = owner === null && SHARED_CHAT_ENDPOINT_AGENTS.indexOf(route.agent_id) !== -1;
+    if (owner !== undefined && owner !== route.agent_id && !validForShared && route.agent_id !== 'mcp') {
+      fallbackNote = (fallbackNote ? fallbackNote + ' ' : '') +
+        'Model paired "' + route.endpoint + '" with agent "' + route.agent_id + '".';
     }
-    route.params = p;
-  }
 
-  const owner = ENDPOINT_TO_AGENT[route.endpoint];
-  const validForShared = owner === null && SHARED_CHAT_ENDPOINT_AGENTS.includes(route.agent_id);
-  if (owner !== undefined && owner !== route.agent_id && !validForShared && route.agent_id !== 'mcp') {
-    fallbackNote = (fallbackNote ? fallbackNote + ' ' : '') +
-      'Model paired "' + route.endpoint + '" with agent "' + route.agent_id + '".';
-  }
+    var routedParams = sanitizeParams(route.params);
+    if ((route.agent_id === 'image' || route.agent_id === 'video') && !routedParams.prompt) {
+      routedParams.prompt = message;
+    }
 
-  const routedParams = sanitizeParams(route.params);
-  if ((route.agent_id === 'image' || route.agent_id === 'video') && !routedParams.prompt) {
-    routedParams.prompt = message;
-  }
+    if (route.endpoint === 'chat.capabilities') {
+      res.status(200).json({
+        agent_id: 'chat',
+        endpoint: 'chat.capabilities',
+        params: { prompt: message },
+        result: buildCapabilitiesText(mcpTools),
+        source: 'master-capabilities',
+        server_executed: true,
+        reasoning: typeof route.reasoning === 'string' ? route.reasoning : 'Capabilities overview',
+        fallback_note: fallbackNote,
+        model_used: 'master-capabilities',
+        fallback_used: false
+      });
+      return;
+    }
 
-  if (route.endpoint === 'chat.capabilities') {
-    res.status(200).json({
-      agent_id: 'chat',
-      endpoint: 'chat.capabilities',
-      params: { prompt: message },
-      result: buildCapabilitiesText(mcpTools),
-      source: 'master-capabilities',
-      server_executed: true,
-      reasoning: typeof route.reasoning === 'string' ? route.reasoning : 'Capabilities overview',
-      fallback_note: fallbackNote,
-      model_used: 'master-capabilities',
-      fallback_used: false
-    });
-    return;
-  }
+    if (route.agent_id === 'chat' || route.agent_id === 'web') {
+      var gen = await tryGenerateAnswer(message, history, prefs, mcpTools);
+      res.status(200).json({
+        agent_id: route.agent_id,
+        endpoint: 'llm.generate',
+        params: { prompt: message },
+        result: gen.text,
+        source: gen.text ? (gen.provider || 'llm') : 'error',
+        server_executed: true,
+        generation_attempts: gen.attempts,
+        reasoning: typeof route.reasoning === 'string' ? route.reasoning : '',
+        fallback_note: fallbackNote,
+        model_used: gen.model || modelUsed,
+        fallback_used: fallbackUsed
+      });
+      return;
+    }
 
-  if (route.agent_id === 'chat' || route.agent_id === 'web') {
-    const gen = await tryGenerateAnswer(message, history, prefs, mcpTools);
+    if (route.agent_id === 'mcp') {
+      res.status(200).json({
+        agent_id: 'mcp',
+        endpoint: 'mcp.call',
+        params: routedParams,
+        mcp_server_id: routedParams.serverId || null,
+        mcp_tool: routedParams.tool || routedParams.name || null,
+        reasoning: typeof route.reasoning === 'string' ? route.reasoning : 'MCP tool',
+        fallback_note: fallbackNote,
+        model_used: modelUsed,
+        fallback_used: fallbackUsed
+      });
+      return;
+    }
+
     res.status(200).json({
       agent_id: route.agent_id,
-      endpoint: 'llm.generate',
-      params: { prompt: message },
-      result: gen.text,
-      source: gen.text ? (gen.provider || 'llm') : 'error',
-      server_executed: true,
-      generation_attempts: gen.attempts,
-      reasoning: typeof route.reasoning === 'string' ? route.reasoning : '',
-      fallback_note: fallbackNote,
-      model_used: gen.model || modelUsed,
-      fallback_used: fallbackUsed
-    });
-    return;
-  }
-
-  // MCP route card — client executes via MCPClient.callTool
-  if (route.agent_id === 'mcp') {
-    res.status(200).json({
-      agent_id: 'mcp',
-      endpoint: 'mcp.call',
+      endpoint: route.endpoint,
       params: routedParams,
-      mcp_server_id: routedParams.serverId || null,
-      mcp_tool: routedParams.tool || routedParams.name || null,
-      reasoning: typeof route.reasoning === 'string' ? route.reasoning : 'MCP tool',
+      reasoning: typeof route.reasoning === 'string' ? route.reasoning : '',
       fallback_note: fallbackNote,
       model_used: modelUsed,
       fallback_used: fallbackUsed
     });
-    return;
+  } catch (err) {
+    console.error('[master]', err);
+    try {
+      res.status(500).json({ error: 'Master router crashed', detail: String(err && err.message ? err.message : err).slice(0, 300) });
+    } catch (_) {}
   }
-
-  res.status(200).json({
-    agent_id: route.agent_id,
-    endpoint: route.endpoint,
-    params: routedParams,
-    reasoning: typeof route.reasoning === 'string' ? route.reasoning : '',
-    fallback_note: fallbackNote,
-    model_used: modelUsed,
-    fallback_used: fallbackUsed
-  });
 };
 
 async function tryGenerateAnswer(message, history, prefs, mcpTools) {
-  const attempts = [];
-  const prior = Array.isArray(history) ? history : [];
-  let mcpHint = '';
+  var attempts = [];
+  var prior = Array.isArray(history) ? history : [];
+  var mcpHint = '';
   if (mcpTools && mcpTools.length) {
     mcpHint = ' Connected MCP tools: ' +
       mcpTools.slice(0, 15).map(function (t) { return t.qualified; }).join(', ') +
       '. Users can ask for these by name.';
   }
-  for (const provider of LLM_CHAIN) {
-    const apiKey = process.env[provider.envKey];
+  for (var pi = 0; pi < LLM_CHAIN.length; pi++) {
+    var provider = LLM_CHAIN[pi];
+    var apiKey = process.env[provider.envKey];
     if (!apiKey) {
       attempts.push({ endpoint: provider.id, error: provider.envKey + ' not set' });
       continue;
     }
-    for (const m of provider.models) {
+    for (var mi = 0; mi < provider.models.length; mi++) {
+      var m = provider.models[mi];
       try {
-        const messages = [
+        var messages = [
           {
             role: 'system',
             content: 'You are the Canton Node Master Agent — orchestrator for a multi-tool generative hub. ' +
@@ -506,20 +525,20 @@ async function tryGenerateAnswer(message, history, prefs, mcpTools) {
             buildPersonaPrompt(prefs)
           }
         ].concat(prior).concat([{ role: 'user', content: message }]);
-        const resp = await fetch(provider.url, {
+        var resp = await fetch(provider.url, {
           method: 'POST',
           headers: authHeaders(provider, apiKey),
           body: JSON.stringify({ model: m.model, messages: messages, max_tokens: 800 }),
           signal: AbortSignal.timeout(45000)
         });
         if (!resp.ok) {
-          const detail = await safeText(resp);
+          var detail = await safeText(resp);
           attempts.push({ endpoint: m.model, error: 'HTTP ' + resp.status + ' — ' + detail.slice(0, 120) });
           continue;
         }
-        const data = await resp.json();
-        const msg = data && data.choices && data.choices[0] && data.choices[0].message;
-        const text = msg && typeof msg.content === 'string' ? msg.content.trim() : '';
+        var data = await resp.json();
+        var msg = data && data.choices && data.choices[0] && data.choices[0].message;
+        var text = msg && typeof msg.content === 'string' ? msg.content.trim() : '';
         if (text) return { text: text, model: m.label, provider: provider.id, attempts: attempts };
         attempts.push({ endpoint: m.model, error: 'empty' });
       } catch (e) {

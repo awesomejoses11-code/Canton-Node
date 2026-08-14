@@ -286,6 +286,7 @@
   <script src="js/api.js"></script>
   <script src="js/skill-loader.js"></script>
   <script src="js/mcp-client.js"></script>
+  <script src="js/mcp-result-format.js"></script>
   <script src="js/hub.js"></script>
   <script src="js/history.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/16.3.0/lib/marked.umd.min.js"></script>
@@ -304,7 +305,6 @@
       const historyToggle = document.getElementById('btn-history-toggle');
       if (historyToggle) historyToggle.classList.toggle('hidden', activeTab !== 'models');
       if (activeTab !== 'models' && window.MasterChat) window.MasterChat.closeDrawer();
-      // hub.js paints #quota-grid — not Quota.renderLimits (that never existed)
       if (activeTab === 'limits' && window.Hub && Hub.refresh) Hub.refresh();
       if (activeTab === 'settings' && window.renderMcpList) window.renderMcpList();
     }
@@ -477,10 +477,10 @@
 
     function escapeHtml(str) {
       return String(str || '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
+        .replace(/&/g, '&')
+        .replace(/</g, '<')
+        .replace(/>/g, '>')
+        .replace(/"/g, '"');
     }
 
     function mcpBuildHeaders() {

@@ -1,7 +1,7 @@
 /* =========================================================================
  * history.js — Chat history storage for the Master Agent
  *
- * localStorage + optional Neon sync (/api/history) when session token exists.
+ * localStorage + optional Neon sync (/api/user) when session token exists.
  * ========================================================================= */
 
 (function (global) {
@@ -46,7 +46,7 @@
     var t = authToken();
     if (!t) return;
     try {
-      fetch('/api/history', {
+      fetch('/api/user', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: t, action: 'save', sessions: sessions })
@@ -58,7 +58,7 @@
     var t = authToken();
     if (!t) return null;
     try {
-      var res = await fetch('/api/history', {
+      var res = await fetch('/api/user', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: t, action: 'load' })

@@ -305,7 +305,7 @@
     try {
       if (data.agent_id === 'mcp' && window.MCPClient) {
         var servers = MCPClient.listServers(email());
-        var sid = data.mcp_server_id || (data.params && data.params.serverId);
+        var sid = data.mcp_server_id || (data.params && data.params.tool);
         var tool = data.mcp_tool || (data.params && data.params.tool);
         var server = servers.find(function (s) { return s.id === sid; });
         if (!server) throw new Error('MCP server not found');
@@ -347,6 +347,7 @@
     var attach = el('master-attach');
     var fileInput = el('master-file-input');
     if (attach && fileInput) {
+      fileInput.setAttribute('accept', 'image/*,.pdf,.txt,.md,.csv,.json,.js,.ts,.py,.html,.css,.xml,audio/*,.doc,.docx,application/pdf,text/plain,text/markdown');
       attach.addEventListener('click', function () { fileInput.click(); });
       fileInput.addEventListener('change', function () {
         var f = fileInput.files && fileInput.files[0];

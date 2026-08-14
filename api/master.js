@@ -1,21 +1,14 @@
 /* =========================================================================
  * api/master.js — Master Agent router (simplified)
  *
- * Priority (first success wins):
- *   1. Heuristic keyword route  — instant, no API, for clear image/video/…
- *   2. Vinci (OpenAI-compatible) — VINCI_API_KEY  [primary LLM]
- *   3. OpenRouter free models     — OPENROUTER_API_KEY
- *   4. Hugging Face router        — HF_TOKEN (fixed model ids)
- *
- * Chat/web answers use the same provider chain for generation.
- * Image/video *execution* stays on /api/image and /api/video (not here).
+ * Priority: heuristic → Vinci → OpenRouter → HF
+ * Chat/web: uses client-sent history[] (last 12 turns) for in-session memory.
  * ========================================================================= */
 
 const VINCI_URL = 'https://vinci.getsimpledirect.com/api/v1/chat/completions';
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const HF_URL = 'https://router.huggingface.co/v1/chat/completions';
 
-/** LLM providers tried in order for routing + chat generation */
 const LLM_CHAIN = [
   {
     id: 'vinci',
@@ -29,7 +22,6 @@ const LLM_CHAIN = [
     label: 'OpenRouter',
     url: OPENROUTER_URL,
     envKey: 'OPENROUTER_API_KEY',
-    // Skip openrouter/free — often returns "invalid route"
     models: [
       { model: 'meta-llama/llama-3.3-70b-instruct:free', label: 'OR Llama 3.3 70B' },
       { model: 'google/gemma-3-27b-it:free', label: 'OR Gemma 3 27B' },
@@ -42,7 +34,6 @@ const LLM_CHAIN = [
     label: 'Hugging Face',
     url: HF_URL,
     envKey: 'HF_TOKEN',
-    // Correct ids (Meta-Llama-3.1 was wrong → 400)
     models: [
       { model: 'Qwen/Qwen2.5-7B-Instruct', label: 'HF Qwen2.5 7B' },
       { model: 'meta-llama/Llama-3.1-8B-Instruct', label: 'HF Llama 3.1 8B' }
@@ -129,31 +120,25 @@ function authHeaders(provider, apiKey) {
 async function callChat(provider, modelCfg, messages, maxTokens) {
   const apiKey = process.env[provider.envKey];
   if (!apiKey) throw new Error(provider.envKey + ' not set');
-
   const body = {
     model: modelCfg.model,
     messages: messages,
     max_tokens: maxTokens || 400
   };
-  if (provider.id === 'openrouter') {
-    body.response_format = { type: 'json_object' };
-  }
-
+  if (provider.id === 'openrouter') body.response_format = { type: 'json_object' };
   const resp = await fetch(provider.url, {
     method: 'POST',
     headers: authHeaders(provider, apiKey),
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(45000)
   });
-
   if (!resp.ok) {
     const detail = await safeText(resp);
     throw new Error('HTTP ' + resp.status + (detail ? ' — ' + detail.slice(0, 180) : ''));
   }
   const data = await resp.json();
   const msg = data && data.choices && data.choices[0] && data.choices[0].message;
-  const content = msg && typeof msg.content === 'string' ? msg.content.trim() : '';
-  return content || null;
+  return (msg && typeof msg.content === 'string' ? msg.content.trim() : '') || null;
 }
 
 async function tryRouteWithProvider(provider, message, errors) {
@@ -163,19 +148,12 @@ async function tryRouteWithProvider(provider, message, errors) {
   }
   for (const m of provider.models) {
     try {
-      const content = await callChat(
-        provider,
-        m,
-        [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: message }
-        ],
-        400
-      );
+      const content = await callChat(provider, m, [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: message }
+      ], 400);
       const parsed = extractRouteJson(content);
-      if (isValidRoute(parsed)) {
-        return { route: parsed, modelUsed: m.label, providerId: provider.id };
-      }
+      if (isValidRoute(parsed)) return { route: parsed, modelUsed: m.label, providerId: provider.id };
       errors.push(m.label + ': invalid route');
     } catch (e) {
       errors.push(m.label + ': ' + e.message);
@@ -203,8 +181,7 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const hasAnyKey = LLM_CHAIN.some(function (p) { return !!process.env[p.envKey]; });
-  if (!hasAnyKey) {
+  if (!LLM_CHAIN.some(function (p) { return !!process.env[p.envKey]; })) {
     res.status(500).json({
       error: 'No router API keys configured. Set VINCI_API_KEY and/or OPENROUTER_API_KEY and/or HF_TOKEN.'
     });
@@ -212,9 +189,20 @@ module.exports = async function handler(req, res) {
   }
 
   let message;
+  let history = [];
   try {
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
     message = String(body.message || '').trim();
+    if (Array.isArray(body.history)) {
+      history = body.history
+        .filter(function (m) {
+          return m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string';
+        })
+        .slice(-12)
+        .map(function (m) {
+          return { role: m.role, content: String(m.content).slice(0, 2000) };
+        });
+    }
   } catch (_) {
     res.status(400).json({ error: 'Invalid JSON body.' });
     return;
@@ -234,14 +222,12 @@ module.exports = async function handler(req, res) {
   let fallbackUsed = false;
   let providerId = null;
 
-  // 1) Heuristic — Master priority for clear intents (no LLM needed)
   route = heuristicRoute(message);
   if (route) {
     modelUsed = 'heuristic';
     providerId = 'heuristic';
   }
 
-  // 2–4) LLM chain: Vinci → OpenRouter → HF
   if (!route) {
     for (const provider of LLM_CHAIN) {
       const hit = await tryRouteWithProvider(provider, message, routeErrors);
@@ -280,9 +266,8 @@ module.exports = async function handler(req, res) {
     routedParams.prompt = message;
   }
 
-  // chat / web — answer on the server via the same LLM chain
   if (route.agent_id === 'chat' || route.agent_id === 'web') {
-    const gen = await tryGenerateAnswer(message);
+    const gen = await tryGenerateAnswer(message, history);
     res.status(200).json({
       agent_id: route.agent_id,
       endpoint: 'llm.generate',
@@ -310,9 +295,9 @@ module.exports = async function handler(req, res) {
   });
 };
 
-/** Chat generation without response_format json_object */
-async function tryGenerateAnswer(message) {
+async function tryGenerateAnswer(message, history) {
   const attempts = [];
+  const prior = Array.isArray(history) ? history : [];
   for (const provider of LLM_CHAIN) {
     const apiKey = process.env[provider.envKey];
     if (!apiKey) {
@@ -321,18 +306,16 @@ async function tryGenerateAnswer(message) {
     }
     for (const m of provider.models) {
       try {
-        const body = {
-          model: m.model,
-          messages: [
-            { role: 'system', content: 'You are a helpful assistant. Answer clearly and concisely.' },
-            { role: 'user', content: message }
-          ],
-          max_tokens: 800
-        };
+        const messages = [
+          {
+            role: 'system',
+            content: 'You are the Canton Node Master Agent assistant. Use prior turns in this conversation when relevant. Answer clearly and concisely.'
+          }
+        ].concat(prior).concat([{ role: 'user', content: message }]);
         const resp = await fetch(provider.url, {
           method: 'POST',
           headers: authHeaders(provider, apiKey),
-          body: JSON.stringify(body),
+          body: JSON.stringify({ model: m.model, messages: messages, max_tokens: 800 }),
           signal: AbortSignal.timeout(45000)
         });
         if (!resp.ok) {
@@ -343,9 +326,7 @@ async function tryGenerateAnswer(message) {
         const data = await resp.json();
         const msg = data && data.choices && data.choices[0] && data.choices[0].message;
         const text = msg && typeof msg.content === 'string' ? msg.content.trim() : '';
-        if (text) {
-          return { text: text, model: m.label, provider: provider.id, attempts: attempts };
-        }
+        if (text) return { text: text, model: m.label, provider: provider.id, attempts: attempts };
         attempts.push({ endpoint: m.model, error: 'empty' });
       } catch (e) {
         attempts.push({ endpoint: m.model, error: e.message });

@@ -9,25 +9,16 @@
  *
  * attachMediaControls(container, mediaEl, url, kind, filenameBase)
  *   Adds a "⬇ Download" + "⧉ Copy image" / "⧉ Copy link" row under an
- *   <img>/<audio>/<video>. Tries a real blob download/clipboard-image copy
- *   first (works for same-origin or CORS-enabled URLs); if the fetch is
- *   blocked (cross-origin without CORS), falls back to opening the file in
- *   a new tab / copying the URL text instead of silently doing nothing.
+ *   <img>/<audio>/<video>.
  *
  * attachCodeControls(container, code, filenameBase, ext)
- *   Adds a "⧉ Copy code" + "⬇ Download" row for a plain string of code/text
- *   — no network involved, so this one always works.
+ *   Adds a "⧉ Copy code" + "⬇ Download" row for a plain string of code/text.
  *
  * enhanceCodeBlocks(root)
- *   Scans a markdown-rendered container for <pre><code> blocks (fenced code
- *   from marked.js) and attaches attachCodeControls to each one it hasn't
- *   already touched. Called automatically from master-client.js's
- *   renderMarkdown(), so any answer with code fences gets per-block
- *   controls with no extra wiring at the call site.
+ *   Scans a markdown-rendered container for <pre><code> blocks.
  *
  * attachMessageActions(box, opts)
- *   Adds Copy / Edit / Refresh under an assistant bubble (route cards,
- *   chat answers, execution results).
+ *   Adds Copy / Edit prompt / Regenerate under an assistant bubble.
  * ========================================================================= */
 
 (function (global) {
@@ -83,10 +74,7 @@
   async function downloadMedia(url, filename, btn) {
     try {
       var blob;
-      if (/^blob:/i.test(url)) {
-        var res = await fetch(url);
-        blob = await res.blob();
-      } else if (/^data:/i.test(url)) {
+      if (/^blob:/i.test(url) || /^data:/i.test(url)) {
         var r = await fetch(url);
         blob = await r.blob();
       } else {
@@ -230,7 +218,7 @@
     bar.appendChild(copyBtn);
 
     if (opts.userPrompt) {
-      var editBtn = actionBtn('Edit', 'Edit the original prompt');
+      var editBtn = actionBtn('Edit prompt', 'Put this prompt back in the box so you can change it');
       editBtn.addEventListener('click', function () {
         var input = document.getElementById('master-input');
         if (!input) return;
@@ -241,7 +229,7 @@
       });
       bar.appendChild(editBtn);
 
-      var refreshBtn = actionBtn('↻ Refresh', 'Re-run this prompt');
+      var refreshBtn = actionBtn('↻ Regenerate', 'Run this prompt again');
       refreshBtn.addEventListener('click', function () {
         var input = document.getElementById('master-input');
         var runBtn = document.getElementById('master-run');

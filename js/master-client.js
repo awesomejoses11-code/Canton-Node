@@ -5,14 +5,15 @@
   let attachedFile = null;
 
   const HEAVY_FEATURES = new Set(['image', 'music', 'video']);
-  const EXECUTABLE_AGENTS = new Set(['image', 'video', 'music', 'tts', 'code', 'html2image']);
+  const EXECUTABLE_AGENTS = new Set(['image', 'video', 'music', 'tts', 'code', 'html2image', 'mcp']);
 
   const SOURCE_LABELS = {
     'openrouter':        (d) => 'OpenRouter — ' + (d.model_used || 'fallback model'),
     'openrouter-online': (d) => 'OpenRouter — with live web search (' + (d.model_used || 'fallback model') + ')',
     'vinci':             (d) => 'Vinci — ' + (d.model_used || 'forte'),
     'llm':               (d) => (d.model_used || 'LLM'),
-    'master-capabilities': () => 'Master Agent — tools & quotas'
+    'master-capabilities': () => 'Master Agent — tools & quotas',
+    'mcp':               (d) => 'MCP — ' + (d.server_name || d.tool || 'external tool')
   };
 
   function getPrexzyAPI() {
@@ -22,6 +23,35 @@
   function getEmail() {
     const u = Auth.current();
     return u ? u.email : null;
+  }
+
+  /** Load enabled MCP tools for the current user (best-effort, never throws). */
+  async function loadMcpToolsForMaster(email) {
+    if (!window.MCPClient || !email) return [];
+    try {
+      const tools = await MCPClient.getEnabledTools(email);
+      // Keep payload small for the router
+      return (tools || []).slice(0, 40).map(function (t) {
+        return {
+          qualified: t.qualified,
+          serverId: t.serverId,
+          serverName: t.serverName,
+          name: t.name,
+          description: String(t.description || '').slice(0, 200),
+          inputSchema: t.inputSchema || { type: 'object' }
+        };
+      });
+    } catch (e) {
+      console.warn('[master] MCP tools load failed', e);
+      return [];
+    }
+  }
+
+  function formatMcpToolsHint(tools) {
+    if (!tools || !tools.length) return '';
+    return tools.map(function (t) {
+      return '- ' + t.qualified + ' (' + t.serverName + '): ' + (t.description || t.name);
+    }).join('\n');
   }
 
   function clearAttachment() {
@@ -200,6 +230,12 @@
         displayName: (settings.displayName || user.username || '').trim(),
         tone: settings.tone || 'friendly'
       };
+
+      // Load MCP tools the same way skills are available to the hub
+      showPlain(assistantBox, 'Loading tools…');
+      const mcpTools = await loadMcpToolsForMaster(email);
+
+      showPlain(assistantBox, 'Routing your request…');
       const res = await fetch('/api/master', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -207,7 +243,8 @@
           message,
           attachment: attachmentInfo,
           history: priorHistory,
-          prefs: prefs
+          prefs: prefs,
+          mcp_tools: mcpTools
         })
       });
       const data = await res.json();
@@ -255,14 +292,19 @@
           meta: {
             agent_id: data.agent_id, endpoint: data.endpoint, params: data.params,
             reasoning: data.reasoning, fallback_note: data.fallback_note,
-            executed: false, executionSummary: null
+            executed: false, executionSummary: null,
+            // MCP-specific fields from router
+            mcp_server_id: data.mcp_server_id || (data.params && data.params.serverId) || null,
+            mcp_tool: data.mcp_tool || (data.params && data.params.tool) || null
           },
           createdAt: new Date().toISOString()
         };
         persistAssistantMessage(email, routeMsg);
 
         const api = getPrexzyAPI();
-        if ((api && api.describe(data.endpoint)) || EXECUTABLE_AGENTS.has(data.agent_id)) {
+        if (data.agent_id === 'mcp') {
+          appendMcpExecuteAction(assistantBox, routeMsg, email);
+        } else if ((api && api.describe(data.endpoint)) || EXECUTABLE_AGENTS.has(data.agent_id)) {
           appendExecuteAction(assistantBox, routeMsg, email);
         } else if (!api) {
           const warn = document.createElement('div');
@@ -316,6 +358,107 @@
       noteEl.textContent = '⚠ ' + data.fallback_note;
       box.append(noteEl);
     }
+  }
+
+  /** Execute an MCP tool route (same UX as Prexzy Execute). */
+  function appendMcpExecuteAction(bubbleEl, routeMsg, email) {
+    const actions = document.createElement('div');
+    actions.className = 'mt-2 pt-2 border-t border-slate-200 dark:border-slate-700 flex items-center gap-2 font-sans';
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'text-xs rounded-lg bg-violet-600 text-white px-3 py-1.5 font-medium hover:bg-violet-700 disabled:opacity-50';
+    btn.textContent = '▶ Execute MCP';
+
+    const note = document.createElement('span');
+    note.className = 'text-[11px] text-slate-400';
+    note.textContent = 'calls external MCP server';
+
+    actions.append(btn, note);
+    bubbleEl.appendChild(actions);
+
+    btn.addEventListener('click', async function () {
+      if (!window.MCPClient) {
+        const errBox = document.createElement('div');
+        errBox.className = 'mt-2 text-rose-600 dark:text-rose-400 text-xs font-sans';
+        errBox.textContent = 'MCPClient is not loaded.';
+        bubbleEl.appendChild(errBox);
+        return;
+      }
+
+      const meta = routeMsg.meta || {};
+      const params = meta.params || {};
+      const serverId = meta.mcp_server_id || params.serverId;
+      const toolName = meta.mcp_tool || params.tool || params.name;
+      // Arguments for the tool (everything except routing keys)
+      const args = Object.assign({}, params);
+      delete args.serverId;
+      delete args.tool;
+      delete args.name;
+      delete args.qualified;
+
+      const servers = MCPClient.listServers(email);
+      const server = servers.find(function (s) { return s.id === serverId; });
+      if (!server) {
+        const errBox = document.createElement('div');
+        errBox.className = 'mt-2 text-rose-600 dark:text-rose-400 text-xs font-sans';
+        errBox.textContent = 'MCP server not found (id: ' + (serverId || '?') + '). Re-add it in Settings.';
+        bubbleEl.appendChild(errBox);
+        return;
+      }
+      if (!toolName) {
+        const errBox = document.createElement('div');
+        errBox.className = 'mt-2 text-rose-600 dark:text-rose-400 text-xs font-sans';
+        errBox.textContent = 'No MCP tool name in route.';
+        bubbleEl.appendChild(errBox);
+        return;
+      }
+
+      const resultArea = document.createElement('div');
+      resultArea.className = 'mt-2 font-sans';
+      bubbleEl.appendChild(resultArea);
+      showPlain(resultArea, 'Calling MCP tool "' + toolName + '" on ' + server.name + '…');
+
+      btn.disabled = true;
+      try {
+        const data = await MCPClient.callTool(server, toolName, args);
+        if (!data.ok) throw new Error(data.error || 'MCP call failed');
+
+        const text = formatMcpResult(data.result);
+        resultArea.classList.remove('whitespace-pre-wrap');
+        resultArea.innerHTML = '';
+        const answerEl = document.createElement('div');
+        answerEl.className = 'text-slate-800 dark:text-slate-100';
+        renderMarkdown(answerEl, text);
+        const metaEl = document.createElement('div');
+        metaEl.className = 'mt-2 pt-2 border-t border-slate-200 dark:border-slate-700 text-[11px] text-slate-400 font-mono';
+        metaEl.textContent = 'via MCP — ' + server.name + ' / ' + toolName;
+        resultArea.append(answerEl, metaEl);
+
+        routeMsg.meta.executed = true;
+        routeMsg.meta.executionSummary = { caption: text.slice(0, 500), mediaUrl: null, mediaKind: null };
+        History.updateMessage(email, currentSessionId, routeMsg.id, { meta: routeMsg.meta });
+        actions.remove();
+      } catch (e) {
+        showPlain(resultArea, 'MCP error: ' + e.message);
+        btn.disabled = false;
+      }
+    });
+  }
+
+  function formatMcpResult(result) {
+    if (result == null) return '(empty result)';
+    if (typeof result === 'string') return result;
+    // Standard MCP tools/call shape: { content: [ { type, text } ] }
+    if (result.content && Array.isArray(result.content)) {
+      return result.content.map(function (c) {
+        if (c.type === 'text' && c.text) return c.text;
+        if (c.type === 'resource' && c.resource) return JSON.stringify(c.resource, null, 2);
+        return JSON.stringify(c);
+      }).join('\n\n');
+    }
+    if (result.structuredContent) return '```json\n' + JSON.stringify(result.structuredContent, null, 2) + '\n```';
+    return '```json\n' + JSON.stringify(result, null, 2) + '\n```';
   }
 
   function appendExecuteAction(bubbleEl, routeMsg, email) {
@@ -536,6 +679,8 @@
         resultArea.appendChild(el);
       }
       box.appendChild(resultArea);
+    } else if (message.meta.agent_id === 'mcp') {
+      appendMcpExecuteAction(box, message, email);
     } else {
       const api = getPrexzyAPI();
       if ((api && api.describe(message.meta.endpoint)) || EXECUTABLE_AGENTS.has(message.meta.agent_id)) {

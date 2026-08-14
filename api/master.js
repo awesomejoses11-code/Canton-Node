@@ -3,6 +3,7 @@
  *
  * Priority: heuristic → Vinci → OpenRouter → HF
  * Chat/web: uses client-sent history[] + prefs { displayName, tone }
+ * MCP: client sends mcp_tools[] from MCPClient.getEnabledTools(email)
  * ========================================================================= */
 
 const VINCI_URL = 'https://vinci.getsimpledirect.com/api/v1/chat/completions';
@@ -50,30 +51,45 @@ const ENDPOINT_TO_AGENT = {
   'code.compile.python': 'code', 'code.compile.js': 'code', 'code.compile.java': 'code',
   'code.compile.c': 'code', 'code.compile.cpp': 'code', 'code.compile.csharp': 'code',
   'code.convert.python': 'code', 'code.convert.js': 'code', 'code.convert.java': 'code',
-  'code.convert.cpp': 'code', 'code.convert.php': 'code'
+  'code.convert.cpp': 'code', 'code.convert.php': 'code',
+  'mcp.call': 'mcp'
 };
 const SHARED_CHAT_ENDPOINT_AGENTS = ['image2html', 'web', 'chat'];
 
-const SYSTEM_PROMPT =
-  'You are the Master Agent router for Canton Node, a multi-tool generative hub. ' +
-  'You do NOT answer the user yourself — you only choose which tool to run. ' +
-  'Reply with ONLY a JSON object (no markdown, no prose):\n' +
-  '{"agent_id":"image|music|video|image2html|html2image|tts|code|web|chat",' +
-  '"endpoint":"...","params":{...},"reasoning":"..."}\n' +
-  'Tools:\n' +
-  '- image → endpoint image.genimage, params {prompt}\n' +
-  '- video → endpoint video.create, params {prompt}\n' +
-  '- music → endpoint music.aimelody, params {prompt}\n' +
-  '- tts → endpoint tts.default, params {text}\n' +
-  '- code → endpoint code.compile.python, params {code}\n' +
-  '- chat → endpoint chat.askgpt5 (general questions)\n' +
-  '- web → endpoint chat.askgpt5 with web:true for current events\n' +
-  'If the user asks for an image, picture, logo, drawing → image.\n' +
-  'If they ask for a video, clip, animation → video.\n' +
-  'If they ask for a song or music → music.\n' +
-  'Never claim you lack tools; always pick the best agent_id.';
+function buildSystemPrompt(mcpTools) {
+  let base =
+    'You are the Master Agent router for Canton Node, a multi-tool generative hub. ' +
+    'You do NOT answer the user yourself — you only choose which tool to run. ' +
+    'Reply with ONLY a JSON object (no markdown, no prose):\n' +
+    '{"agent_id":"image|music|video|image2html|html2image|tts|code|web|chat|mcp",' +
+    '"endpoint":"...","params":{...},"reasoning":"..."}\n' +
+    'Tools:\n' +
+    '- image → endpoint image.genimage, params {prompt}\n' +
+    '- video → endpoint video.create, params {prompt}\n' +
+    '- music → endpoint music.aimelody, params {prompt}\n' +
+    '- tts → endpoint tts.default, params {text}\n' +
+    '- code → endpoint code.compile.python, params {code}\n' +
+    '- chat → endpoint chat.askgpt5 (general questions)\n' +
+    '- web → endpoint chat.askgpt5 with web:true for current events\n' +
+    '- mcp → endpoint mcp.call, params {serverId, tool, ...toolArgs} when an external MCP tool fits\n' +
+    'If the user asks for an image, picture, logo, drawing → image.\n' +
+    'If they ask for a video, clip, animation → video.\n' +
+    'If they ask for a song or music → music.\n' +
+    'Never claim you lack tools; always pick the best agent_id.';
 
-function heuristicRoute(message) {
+  if (mcpTools && mcpTools.length) {
+    base += '\n\nExternal MCP tools available (prefer agent_id "mcp" when the user clearly wants one of these):\n';
+    mcpTools.slice(0, 30).forEach(function (t) {
+      base += '- ' + t.qualified + ' | serverId=' + t.serverId + ' tool=' + t.name +
+        ' | ' + (t.description || '') + '\n';
+    });
+    base += 'When choosing mcp, set endpoint to "mcp.call" and params to ' +
+      '{ "serverId": "...", "tool": "exact_tool_name", ...any tool arguments }.';
+  }
+  return base;
+}
+
+function heuristicRoute(message, mcpTools) {
   const m = message.toLowerCase();
   if (/\b(video|clip|animation|footage|\.mp4|text.?to.?video|generate (a )?video)\b/.test(m))
     return { agent_id: 'video', endpoint: 'video.create', params: { prompt: message }, reasoning: 'Heuristic: video' };
@@ -93,7 +109,34 @@ function heuristicRoute(message) {
     return { agent_id: 'web', endpoint: 'chat.askgpt5', params: { prompt: message, web: true }, reasoning: 'Heuristic: web' };
   if (/\b(what can you do|your (tools|capabilities|features)|list (your )?tools|use (the )?tools|tools? you have|who are you|what are you)\b/.test(m))
     return { agent_id: 'chat', endpoint: 'chat.capabilities', params: { prompt: message }, reasoning: 'Heuristic: capabilities' };
+
+  // Explicit MCP qualified name in the message
+  if (mcpTools && mcpTools.length) {
+    for (let i = 0; i < mcpTools.length; i++) {
+      const t = mcpTools[i];
+      if (t.qualified && m.includes(String(t.qualified).toLowerCase())) {
+        return {
+          agent_id: 'mcp',
+          endpoint: 'mcp.call',
+          params: { serverId: t.serverId, tool: t.name },
+          reasoning: 'Heuristic: explicit MCP tool ' + t.qualified
+        };
+      }
+      if (t.name && new RegExp('\\bmcp[:\\s]+' + escapeRegExp(t.name) + '\\b', 'i').test(message)) {
+        return {
+          agent_id: 'mcp',
+          endpoint: 'mcp.call',
+          params: { serverId: t.serverId, tool: t.name },
+          reasoning: 'Heuristic: MCP tool name ' + t.name
+        };
+      }
+    }
+  }
   return null;
+}
+
+function escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function extractRouteJson(raw) {
@@ -154,7 +197,7 @@ async function callChat(provider, modelCfg, messages, maxTokens) {
   return (msg && typeof msg.content === 'string' ? msg.content.trim() : '') || null;
 }
 
-async function tryRouteWithProvider(provider, message, errors) {
+async function tryRouteWithProvider(provider, message, systemPrompt, errors) {
   if (!process.env[provider.envKey]) {
     errors.push(provider.label + ': ' + provider.envKey + ' not set');
     return null;
@@ -162,7 +205,7 @@ async function tryRouteWithProvider(provider, message, errors) {
   for (const m of provider.models) {
     try {
       const content = await callChat(provider, m, [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: systemPrompt },
         { role: 'user', content: message }
       ], 400);
       const parsed = extractRouteJson(content);
@@ -178,30 +221,48 @@ async function tryRouteWithProvider(provider, message, errors) {
 function sanitizeParams(params) {
   const allowed = new Set([
     'prompt', 'text', 'code', 'from', 'voice', 'size', 'steps', 'style',
-    'image', 'lyrics', 'title', 'html', 'width', 'height', 'stdin', 'web', 'duration'
+    'image', 'lyrics', 'title', 'html', 'width', 'height', 'stdin', 'web', 'duration',
+    'serverId', 'tool', 'name', 'qualified'
   ]);
   const out = {};
   if (!params || typeof params !== 'object') return out;
   for (const [k, v] of Object.entries(params)) {
-    if (allowed.has(k) && v !== undefined && v !== null && v !== '') out[k] = v;
+    // Pass through MCP tool args (string/number/boolean/plain objects)
+    if (allowed.has(k) || k.startsWith('arg_') || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+      if (v !== undefined && v !== null && v !== '') out[k] = v;
+    }
   }
   return out;
 }
 
-const CAPABILITIES_TEXT =
-  'I am the **Canton Node Master Agent** — a router and orchestrator for this hub, not a text-only chatbot.\n\n' +
-  'When you ask for media or code, I **route** the request to the right tool. Available tools:\n\n' +
-  '| Tool | Example prompt | Daily quota |\n' +
-  '|------|----------------|-------------|\n' +
-  '| **Image** | Generate a sunset over mountains | 12/day |\n' +
-  '| **Video** | Make a short video of waves on a beach | 4/day |\n' +
-  '| **Music** | Compose a calm lo-fi beat | 8/day |\n' +
-  '| **TTS** | Speak this text: Hello world | 50/day |\n' +
-  '| **Code** | paste code and ask to compile/convert | 50/day |\n' +
-  '| **Chat / Q&A** | any general question | Master routing 80/day |\n\n' +
-  '**How to use a tool:** describe what you want (e.g. draw a neon city skyline). ' +
-  'I return a route card; for image/video/music press **Execute** (uses that tool quota).\n\n' +
-  'I will not pretend I lack these tools. If something fails, use **Edit prompt** or **Regenerate**.';
+function buildCapabilitiesText(mcpTools) {
+  let text =
+    'I am the **Canton Node Master Agent** — a router and orchestrator for this hub, not a text-only chatbot.\n\n' +
+    'When you ask for media or code, I **route** the request to the right tool. Available tools:\n\n' +
+    '| Tool | Example prompt | Daily quota |\n' +
+    '|------|----------------|-------------|\n' +
+    '| **Image** | Generate a sunset over mountains | 12/day |\n' +
+    '| **Video** | Make a short video of waves on a beach | 4/day |\n' +
+    '| **Music** | Compose a calm lo-fi beat | 8/day |\n' +
+    '| **TTS** | Speak this text: Hello world | 50/day |\n' +
+    '| **Code** | paste code and ask to compile/convert | 50/day |\n' +
+    '| **Chat / Q&A** | any general question | Master routing 80/day |\n';
+
+  if (mcpTools && mcpTools.length) {
+    text += '\n**Connected MCP tools** (external):\n\n';
+    mcpTools.slice(0, 20).forEach(function (t) {
+      text += '- `' + t.qualified + '` — ' + (t.description || t.name) + ' _(via ' + t.serverName + ')_\n';
+    });
+    text += '\nAsk for an MCP tool by name, or describe the task; press **Execute MCP** on the route card.\n';
+  } else {
+    text += '\n_No MCP servers connected. Add them under Settings → MCP Servers._\n';
+  }
+
+  text +=\n    '\n**How to use a tool:** describe what you want (e.g. draw a neon city skyline). ' +
+    'I return a route card; for image/video/music press **Execute** (uses that tool quota).\n\n' +
+    'I will not pretend I lack these tools. If something fails, use **Edit prompt** or **Regenerate**.';
+  return text;
+}
 
 const TONE_MAP = {
   friendly: 'warm, approachable, and encouraging',
@@ -223,6 +284,20 @@ function buildPersonaPrompt(prefs) {
   return s;
 }
 
+function normalizeMcpTools(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 40).map(function (t) {
+    if (!t || typeof t !== 'object') return null;
+    return {
+      qualified: String(t.qualified || '').slice(0, 120),
+      serverId: String(t.serverId || '').slice(0, 64),
+      serverName: String(t.serverName || '').slice(0, 80),
+      name: String(t.name || '').slice(0, 80),
+      description: String(t.description || '').slice(0, 200)
+    };
+  }).filter(function (t) { return t && t.serverId && t.name; });
+}
+
 module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method not allowed. Use POST.' });
@@ -239,10 +314,12 @@ module.exports = async function handler(req, res) {
   let message;
   let history = [];
   let prefs = {};
+  let mcpTools = [];
   try {
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
     message = String(body.message || '').trim();
     prefs = (body.prefs && typeof body.prefs === 'object') ? body.prefs : {};
+    mcpTools = normalizeMcpTools(body.mcp_tools);
     if (Array.isArray(body.history)) {
       history = body.history
         .filter(function (m) {
@@ -266,13 +343,14 @@ module.exports = async function handler(req, res) {
     return;
   }
 
+  const systemPrompt = buildSystemPrompt(mcpTools);
   const routeErrors = [];
   let route = null;
   let modelUsed = null;
   let fallbackUsed = false;
   let providerId = null;
 
-  route = heuristicRoute(message);
+  route = heuristicRoute(message, mcpTools);
   if (route) {
     modelUsed = 'heuristic';
     providerId = 'heuristic';
@@ -280,7 +358,7 @@ module.exports = async function handler(req, res) {
 
   if (!route) {
     for (const provider of LLM_CHAIN) {
-      const hit = await tryRouteWithProvider(provider, message, routeErrors);
+      const hit = await tryRouteWithProvider(provider, message, systemPrompt, routeErrors);
       if (hit) {
         route = hit.route;
         modelUsed = hit.modelUsed;
@@ -304,9 +382,29 @@ module.exports = async function handler(req, res) {
     fallbackNote = 'Primary Vinci router skipped or failed — used ' + modelUsed + '.';
   }
 
+  // Normalize MCP routes from the LLM
+  if (route.agent_id === 'mcp' || (typeof route.endpoint === 'string' && route.endpoint.indexOf('mcp') === 0)) {
+    route.agent_id = 'mcp';
+    route.endpoint = 'mcp.call';
+    const p = route.params && typeof route.params === 'object' ? route.params : {};
+    // Resolve tool from qualified name if needed
+    if ((!p.serverId || !p.tool) && p.qualified && mcpTools.length) {
+      const match = mcpTools.find(function (t) { return t.qualified === p.qualified; });
+      if (match) {
+        p.serverId = match.serverId;
+        p.tool = match.name;
+      }
+    }
+    if ((!p.serverId || !p.tool) && p.tool && mcpTools.length) {
+      const match = mcpTools.find(function (t) { return t.name === p.tool; });
+      if (match) p.serverId = match.serverId;
+    }
+    route.params = p;
+  }
+
   const owner = ENDPOINT_TO_AGENT[route.endpoint];
   const validForShared = owner === null && SHARED_CHAT_ENDPOINT_AGENTS.includes(route.agent_id);
-  if (owner !== undefined && owner !== route.agent_id && !validForShared) {
+  if (owner !== undefined && owner !== route.agent_id && !validForShared && route.agent_id !== 'mcp') {
     fallbackNote = (fallbackNote ? fallbackNote + ' ' : '') +
       'Model paired "' + route.endpoint + '" with agent "' + route.agent_id + '".';
   }
@@ -321,7 +419,7 @@ module.exports = async function handler(req, res) {
       agent_id: 'chat',
       endpoint: 'chat.capabilities',
       params: { prompt: message },
-      result: CAPABILITIES_TEXT,
+      result: buildCapabilitiesText(mcpTools),
       source: 'master-capabilities',
       server_executed: true,
       reasoning: typeof route.reasoning === 'string' ? route.reasoning : 'Capabilities overview',
@@ -333,7 +431,7 @@ module.exports = async function handler(req, res) {
   }
 
   if (route.agent_id === 'chat' || route.agent_id === 'web') {
-    const gen = await tryGenerateAnswer(message, history, prefs);
+    const gen = await tryGenerateAnswer(message, history, prefs, mcpTools);
     res.status(200).json({
       agent_id: route.agent_id,
       endpoint: 'llm.generate',
@@ -350,6 +448,22 @@ module.exports = async function handler(req, res) {
     return;
   }
 
+  // MCP route card — client executes via MCPClient.callTool
+  if (route.agent_id === 'mcp') {
+    res.status(200).json({
+      agent_id: 'mcp',
+      endpoint: 'mcp.call',
+      params: routedParams,
+      mcp_server_id: routedParams.serverId || null,
+      mcp_tool: routedParams.tool || routedParams.name || null,
+      reasoning: typeof route.reasoning === 'string' ? route.reasoning : 'MCP tool',
+      fallback_note: fallbackNote,
+      model_used: modelUsed,
+      fallback_used: fallbackUsed
+    });
+    return;
+  }
+
   res.status(200).json({
     agent_id: route.agent_id,
     endpoint: route.endpoint,
@@ -361,9 +475,15 @@ module.exports = async function handler(req, res) {
   });
 };
 
-async function tryGenerateAnswer(message, history, prefs) {
+async function tryGenerateAnswer(message, history, prefs, mcpTools) {
   const attempts = [];
   const prior = Array.isArray(history) ? history : [];
+  let mcpHint = '';
+  if (mcpTools && mcpTools.length) {
+    mcpHint = ' Connected MCP tools: ' +
+      mcpTools.slice(0, 15).map(function (t) { return t.qualified; }).join(', ') +
+      '. Users can ask for these by name.';
+  }
   for (const provider of LLM_CHAIN) {
     const apiKey = process.env[provider.envKey];
     if (!apiKey) {
@@ -376,12 +496,13 @@ async function tryGenerateAnswer(message, history, prefs) {
           {
             role: 'system',
             content: 'You are the Canton Node Master Agent — orchestrator for a multi-tool generative hub. ' +
-            'You CAN route users to real tools: image, video, music, TTS, and code generation. ' +
+            'You CAN route users to real tools: image, video, music, TTS, code generation, and MCP external tools. ' +
             'You are NOT a text-only chatbot. Never say you lack image, video, music, or media tools. ' +
             'If the user wants media, tell them to ask concretely (e.g. Generate an image of…). ' +
-            'After routing, they may need to press Execute. ' +
+            'After routing, they may need to press Execute or Execute MCP. ' +
             'Daily quotas: Master routing 80, image 12, video 4, music 8, TTS 50, code 50. ' +
-            'Use prior turns when relevant. Answer clearly. ' +
+            mcpHint +
+            ' Use prior turns when relevant. Answer clearly. ' +
             buildPersonaPrompt(prefs)
           }
         ].concat(prior).concat([{ role: 'user', content: message }]);

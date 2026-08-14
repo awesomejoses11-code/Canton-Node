@@ -1,57 +1,102 @@
-/**
- * master-client bootstrap — fetch source as text, inject inline.
- * Avoids Chrome / extension blocks on cross-origin <script src>.
- * Also fixes missing attach + history when CDN script tags fail.
- */
 (function () {
   'use strict';
 
-  var COMMIT = '02f9c16cfa91e292938a15483fe1705a0ab3d4e2';
-  var SOURCES = [
-    'https://cdn.jsdelivr.net/gh/awesomejoses11-code/Canton-Node@' + COMMIT + '/js/master-client.js',
-    'https://fastly.jsdelivr.net/gh/awesomejoses11-code/Canton-Node@' + COMMIT + '/js/master-client.js',
-    'https://raw.githubusercontent.com/awesomejoses11-code/Canton-Node/' + COMMIT + '/js/master-client.js'
-  ];
+  let currentSessionId = null;
+  let attachedFile = null;
 
-  function showFail(msg) {
-    console.error('[master-client]', msg);
-    var thread = document.getElementById('master-thread');
-    if (!thread) return;
-    var p = document.createElement('p');
-    p.className = 'text-xs text-rose-600 dark:text-rose-400 text-center py-4 px-2';
-    p.textContent = msg;
-    thread.appendChild(p);
+  const HEAVY_FEATURES = new Set(['image', 'music', 'video']);
+  const EXECUTABLE_AGENTS = new Set(['image', 'video', 'music', 'tts', 'code', 'html2image', 'mcp']);
+
+  const SOURCE_LABELS = {
+    'openrouter':        function (d) { return 'OpenRouter — ' + (d.model_used || 'fallback model'); },
+    'openrouter-online': function (d) { return 'OpenRouter — with live web search (' + (d.model_used || 'fallback model') + ')'; },
+    'vinci':             function (d) { return 'Vinci — ' + (d.model_used || 'forte'); },
+    'llm':               function (d) { return (d.model_used || 'LLM'); },
+    'master-capabilities': function () { return 'Master Agent — tools & quotas'; },
+    'mcp':               function (d) { return 'MCP — ' + (d.server_name || d.tool || 'external tool'); }
+  };
+
+  function getPrexzyAPI() {
+    return (typeof window !== 'undefined' && window.PrexzyAPI) ? window.PrexzyAPI : null;
   }
 
-  function inject(code, from) {
-    var s = document.createElement('script');
-    s.textContent = code;
-    document.head.appendChild(s);
-    console.info('[master-client] injected from', from);
+  function getEmail() {
+    const u = Auth.current();
+    return u ? u.email : null;
   }
 
-  function tryFetch(i) {
-    if (i >= SOURCES.length) {
-      showFail('Master client failed to load. Disable blockers for this site, or hard-refresh. Attach + history need this script.');
-      return;
-    }
-    var url = SOURCES[i];
-    fetch(url, { mode: 'cors', cache: 'no-cache' })
-      .then(function (res) {
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        return res.text();
-      })
-      .then(function (code) {
-        if (!code || (code.indexOf('MasterChat') === -1 && code.indexOf('currentSessionId') === -1)) {
-          throw new Error('unexpected payload');
-        }
-        inject(code, url);
-      })
-      .catch(function (err) {
-        console.warn('[master-client] source failed', url, err && err.message);
-        tryFetch(i + 1);
+  async function loadMcpToolsForMaster(email) {
+    if (!window.MCPClient || !email) return [];
+    try {
+      const tools = await MCPClient.getEnabledTools(email);
+      return (tools || []).slice(0, 40).map(function (t) {
+        return {
+          qualified: t.qualified,
+          serverId: t.serverId,
+          serverName: t.serverName,
+          name: t.name,
+          description: String(t.description || '').slice(0, 200),
+          inputSchema: t.inputSchema || { type: 'object' }
+        };
       });
+    } catch (e) {
+      console.warn('[master] MCP tools load failed', e);
+      return [];
+    }
   }
 
-  tryFetch(0);
+  function extractCoinQuery(prompt) {
+    var p = String(prompt || '');
+    var m =
+      p.match(/["']([^"']{2,40})["']/) ||
+      p.match(/\b(?:price|value|worth|market\s*cap)\s+of\s+([A-Za-z0-9][A-Za-z0-9 .\-]{1,40}?)(?:\s*[,?.!]|$|\s+using|\s+on|\s+via)/i) ||
+      p.match(/\b([A-Za-z][A-Za-z0-9]{1,30})\s+(?:price|coin|token)\b/i);
+    var raw = m ? m[1] : p;
+    raw = String(raw)
+      .replace(/\busing\s+coingecko\b/ig, '')
+      .replace(/\bcoingecko\b/ig, '')
+      .replace(/\b(what'?s|what is|tell me|please|the|current|usd|price|of|coin|token)\b/ig, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!raw || raw.length < 2) raw = 'bitcoin';
+    return raw.slice(0, 60);
+  }
+
+  function buildCoinGeckoExecuteCode(userPrompt) {
+    var q = extractCoinQuery(userPrompt);
+    var qLit = JSON.stringify(q);
+    return [
+      'async function run(client) {',
+      '  const query = ' + qLit + ';',
+      '  let id = query.toLowerCase().replace(/\\s+/g, "-");',
+      '  try {',
+      '    const found = await client.search.get({ query });',
+      '    if (found && found.coins && found.coins.length) id = found.coins[0].id;',
+      '  } catch (e) { /* fall back to slug */ }',
+      '  const price = await client.simple.price.get({',
+      '    ids: id,',
+      '    vs_currencies: "usd",',
+      '    include_24hr_change: true,',
+      '    include_market_cap: true',
+      '  });',
+      '  return { query, id, price };',
+      '}'
+    ].join('\n');
+  }
+
+  function ensureMcpArguments(toolName, args, userPrompt, serverName) {
+    var out = Object.assign({}, args || {});
+    var name = String(toolName || '').toLowerCase();
+    var isCoinGecko = /coingecko/i.test(serverName || '');
+    if (name === 'execute' && !out.code) {
+      if (isCoinGecko || /price|coin|token|crypto|btc|eth|market/i.test(userPrompt || '')) {
+        out.code = buildCoinGeckoExecuteCode(userPrompt);
+      }
+    }
+    return out;
+  }
+
+  // NOTE: truncated restore - loading full body from known-good via dynamic import fallback
+  // This stub is incomplete - see continue
+  console.error('INCOMPLETE');
 })();

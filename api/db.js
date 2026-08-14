@@ -41,6 +41,16 @@ async function ensureSchema() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `;
+  /* Per-user markdown memory docs (reference.md + user_logs.md) — cross-device */
+  await sql`
+    CREATE TABLE IF NOT EXISTS user_docs (
+      email TEXT NOT NULL REFERENCES users(email) ON DELETE CASCADE,
+      doc_key TEXT NOT NULL,
+      content TEXT NOT NULL DEFAULT '',
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (email, doc_key)
+    )
+  `;
   schemaReady = true;
   return true;
 }

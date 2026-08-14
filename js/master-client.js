@@ -221,9 +221,12 @@
     currentSessionId = id;
     var thread = el('master-thread');
     thread.innerHTML = '';
+    var lastUserPrompt = '';
     (s.messages || []).forEach(function (m) {
-      if (m.role === 'user') appendUser(m.content || '', m.meta);
-      else {
+      if (m.role === 'user') {
+        lastUserPrompt = m.content || '';
+        appendUser(m.content || '', m.meta);
+      } else {
         var b = appendAssistant();
         b.textContent = '';
         var ans = document.createElement('div');
@@ -232,7 +235,10 @@
         if (window.OutputActions) {
           if (OutputActions.enhanceCodeBlocks) OutputActions.enhanceCodeBlocks(ans);
           if (OutputActions.attachMessageActions) {
-            OutputActions.attachMessageActions(b, { text: m.content || '' });
+            OutputActions.attachMessageActions(b, {
+              text: m.content || '',
+              userPrompt: lastUserPrompt
+            });
           }
         }
       }

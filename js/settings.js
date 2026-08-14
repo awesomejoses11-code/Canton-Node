@@ -1,11 +1,8 @@
 /* =========================================================================
  * settings.js — Per-user customization store
  *
- * Settings are namespaced per account (`prexzy.settings.v1.<email>`) so each
- * user on a shared device keeps their own theme, tone, and defaults.
- *
- * Settings.applyAll() pushes visual settings into the DOM. Call after login
- * and after every save.
+ * Local cache: prexzy.settings.v1.<email>
+ * Server:     /api/user key=settings (JSON string) when session token exists
  * ========================================================================= */
 
 (function (global) {
@@ -45,6 +42,50 @@
 
   function key(email) { return PREFIX + '.' + String(email || 'anon').toLowerCase(); }
 
+  function authToken() {
+    try {
+      var u = (typeof Auth !== 'undefined' && Auth.current) ? Auth.current() : null;
+      if (u && u.token) return u.token;
+    } catch (_) {}
+    try {
+      for (var i = 0; i < 2; i++) {
+        var store = i === 0 ? sessionStorage : localStorage;
+        var raw = store.getItem('prexzy.session.v1');
+        if (!raw) continue;
+        var p = JSON.parse(raw);
+        if (p && p.token) return p.token;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function pushToServer(settings) {
+    var t = authToken();
+    if (!t) return;
+    try {
+      fetch('/api/user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: t, key: 'settings', content: JSON.stringify(settings) })
+      }).catch(function () {});
+    } catch (_) {}
+  }
+
+  async function pullFromServer() {
+    var t = authToken();
+    if (!t) return null;
+    try {
+      var res = await fetch('/api/user?key=settings&token=' + encodeURIComponent(t));
+      var data = await res.json().catch(function () { return null; });
+      if (!res.ok || !data || !data.ok || typeof data.content !== 'string') return null;
+      try {
+        var parsed = JSON.parse(data.content);
+        if (parsed && typeof parsed === 'object') return parsed;
+      } catch (_) {}
+    } catch (_) {}
+    return null;
+  }
+
   const Settings = {
     DEFAULTS,
     TONES,
@@ -67,6 +108,16 @@
 
     save: function (email, settings) {
       try { localStorage.setItem(key(email), JSON.stringify(settings)); } catch (_) {}
+      pushToServer(settings);
+    },
+
+    /** Pull Neon settings into local cache (call after login). */
+    async syncFromServer: async function (email) {
+      var remote = await pullFromServer();
+      if (!remote) return this.load(email);
+      var merged = Object.assign({}, DEFAULTS, remote);
+      try { localStorage.setItem(key(email), JSON.stringify(merged)); } catch (_) {}
+      return merged;
     },
 
     applyAll: function (s) {

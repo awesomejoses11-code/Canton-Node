@@ -51,6 +51,13 @@ async function ensureSchema() {
       PRIMARY KEY (email, doc_key)
     )
   `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS chat_history (
+      email TEXT PRIMARY KEY REFERENCES users(email) ON DELETE CASCADE,
+      sessions JSONB NOT NULL DEFAULT '[]'::jsonb,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `;
   schemaReady = true;
   return true;
 }

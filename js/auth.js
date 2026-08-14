@@ -2,7 +2,7 @@
  * auth.js — Server-first auth (Neon) with localStorage fallback
  *
  * Priority:
- *   1. /api/auth-register | /api/auth-login | /api/auth-me  (cross-device)
+ *   1. /api/auth  action=register|login|me  (cross-device via Neon)
  *   2. localStorage users (private device gate if DB unavailable)
  *
  * Session shape (both stores):
@@ -66,11 +66,11 @@
     try { sessionStorage.removeItem(SESSION_KEY); } catch (_) {}
   }
 
-  async function serverPost(path, body) {
-    const res = await fetch(path, {
+  async function serverAuth(action, body) {
+    const res = await fetch('/api/auth', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body || {})
+      body: JSON.stringify(Object.assign({ action: action }, body || {}))
     });
     let data = null;
     try { data = await res.json(); } catch (_) {}
@@ -87,7 +87,7 @@
 
       // Prefer Neon
       try {
-        const { res, data } = await serverPost('/api/auth-register', {
+        const { res, data } = await serverAuth('register', {
           email: email, username: username, password: password
         });
         if (res.ok && data && data.ok && data.user) {
@@ -122,7 +122,7 @@
       email = String(email || '').trim().toLowerCase();
 
       try {
-        const { res, data } = await serverPost('/api/auth-login', {
+        const { res, data } = await serverAuth('login', {
           email: email, password: password
         });
         if (res.ok && data && data.ok && data.user) {
@@ -157,7 +157,7 @@
       const s = readSession();
       if (!s || !s.token) return this.current();
       try {
-        const { res, data } = await serverPost('/api/auth-me', { token: s.token });
+        const { res, data } = await serverAuth('me', { token: s.token });
         if (res.ok && data && data.ok && data.user) {
           const persistent = !!localStorage.getItem(SESSION_KEY);
           return this._startSession(data.user, persistent, s.token, data.expiresAt);

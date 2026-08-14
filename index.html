@@ -35,8 +35,28 @@
       --brand-700: 67 56 202;
     }
     .quota-bar { transition: width .3s ease; }
-    .markdown-body pre { overflow-x: auto; }
-    .markdown-body code { font-size: 0.85em; }
+    .markdown-body { line-height: 1.55; color: inherit; }
+    .markdown-body h1, .markdown-body h2, .markdown-body h3 {
+      font-weight: 600; margin: 0.75em 0 0.35em; line-height: 1.25;
+    }
+    .markdown-body h1 { font-size: 1.25rem; }
+    .markdown-body h2 { font-size: 1.1rem; }
+    .markdown-body h3 { font-size: 1rem; }
+    .markdown-body p { margin: 0.4em 0; }
+    .markdown-body ul, .markdown-body ol { margin: 0.4em 0; padding-left: 1.25rem; }
+    .markdown-body li { margin: 0.15em 0; }
+    .markdown-body strong { font-weight: 700; }
+    .markdown-body pre {
+      overflow-x: auto; padding: 0.6rem 0.75rem; border-radius: 0.5rem;
+      background: rgb(15 23 42 / 0.06); margin: 0.5em 0;
+    }
+    .dark .markdown-body pre { background: rgb(15 23 42 / 0.5); }
+    .markdown-body code { font-size: 0.85em; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .markdown-body pre code { font-size: 0.8em; }
+    .markdown-body a { color: rgb(79 70 229); text-decoration: underline; }
+    .markdown-body blockquote {
+      border-left: 3px solid rgb(148 163 184); padding-left: 0.75rem; margin: 0.5em 0; opacity: 0.9;
+    }
   </style>
 </head>
 <body class="bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-100 min-h-screen flex flex-col">
@@ -228,6 +248,42 @@
         </section>
 
         <section class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-5">
+          <div class="mb-3">
+            <h2 class="text-base font-display font-semibold mb-1">Agent memory</h2>
+            <p class="text-xs text-slate-500 dark:text-slate-400">
+              Stored on Neon per account — available on any device after login.
+              <span class="font-mono text-[10px]">reference.md</span> is long-term knowledge;
+              <span class="font-mono text-[10px]">user_logs.md</span> holds preferences and custom commands.
+            </p>
+          </div>
+          <label class="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400 select-none mb-3">
+            <input id="set-memory-enabled" type="checkbox" class="rounded border-slate-300 text-brand-600 focus:ring-brand-500" checked />
+            Use memory when Master answers
+          </label>
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <label class="text-xs font-medium">reference.md</label>
+                <button type="button" id="docs-save-reference" class="text-[11px] text-brand-600 hover:underline">Save</button>
+              </div>
+              <textarea id="docs-reference" rows="10"
+                class="w-full rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-brand-500"
+                placeholder="# Agent reference…"></textarea>
+            </div>
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <label class="text-xs font-medium">user_logs.md</label>
+                <button type="button" id="docs-save-user-logs" class="text-[11px] text-brand-600 hover:underline">Save</button>
+              </div>
+              <textarea id="docs-user-logs" rows="10"
+                class="w-full rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-brand-500"
+                placeholder="# User log…"></textarea>
+            </div>
+          </div>
+          <p id="docs-status" class="mt-2 text-[11px] text-slate-500"></p>
+        </section>
+
+        <section class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-5">
           <div class="flex items-start justify-between gap-3 mb-4">
             <div>
               <h2 class="text-base font-display font-semibold mb-1">MCP Servers</h2>
@@ -264,13 +320,14 @@
     </main>
 
     <footer class="max-w-6xl mx-auto px-4 py-8 text-center text-xs text-slate-400">
-      Canton Node · private build · Master + MCP
+      Canton Node · private build · Master + MCP + Neon memory
     </footer>
   </div>
 
   <script src="js/quota.js"></script>
   <script src="js/auth.js"></script>
   <script src="js/settings.js"></script>
+  <script src="js/docs-client.js"></script>
   <script src="js/api.js"></script>
   <script src="js/skill-loader.js"></script>
   <script src="js/mcp-client.js"></script>
@@ -295,7 +352,10 @@
       if (historyToggle) historyToggle.classList.toggle('hidden', activeTab !== 'models');
       if (activeTab !== 'models' && window.MasterChat) window.MasterChat.closeDrawer();
       if (activeTab === 'limits' && window.Hub && Hub.refresh) Hub.refresh();
-      if (activeTab === 'settings' && window.renderMcpList) window.renderMcpList();
+      if (activeTab === 'settings') {
+        if (window.renderMcpList) window.renderMcpList();
+        if (window.loadDocsIntoSettings) loadDocsIntoSettings();
+      }
     }
     document.querySelectorAll('.tab-btn').forEach(btn =>
       btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
@@ -328,6 +388,9 @@
       document.getElementById('set-routing-mode').value    = s.routingMode;
       document.getElementById('set-confirm-heavy').checked = s.confirmHeavy;
       document.getElementById('set-compact-cards').checked = s.compactCards;
+      var memEl = document.getElementById('set-memory-enabled');
+      if (memEl) memEl.checked = s.memoryEnabled !== false;
+      if (window.loadDocsIntoSettings) loadDocsIntoSettings();
     }
     function enterApp(user) {
       const settings = Settings.load(user.email);
@@ -380,7 +443,10 @@
         ttsVoice:      document.getElementById('set-tts-voice').value,
         routingMode:   document.getElementById('set-routing-mode').value,
         confirmHeavy:  document.getElementById('set-confirm-heavy').checked,
-        compactCards:  document.getElementById('set-compact-cards').checked
+        compactCards:  document.getElementById('set-compact-cards').checked,
+        memoryEnabled: document.getElementById('set-memory-enabled')
+          ? document.getElementById('set-memory-enabled').checked
+          : true
       };
       Settings.save(user.email, s);
       Settings.applyAll(s);
@@ -389,6 +455,44 @@
       ok.classList.remove('hidden');
       setTimeout(() => ok.classList.add('hidden'), 2000);
     });
+
+    async function loadDocsIntoSettings() {
+      var status = document.getElementById('docs-status');
+      if (!window.DocsClient) {
+        if (status) status.textContent = 'Docs client not loaded.';
+        return;
+      }
+      if (status) status.textContent = 'Loading memory from Neon…';
+      var res = await DocsClient.list();
+      if (!res.ok) {
+        if (status) status.textContent = res.error || 'Could not load docs (need Neon session).';
+        return;
+      }
+      var ref = document.getElementById('docs-reference');
+      var logs = document.getElementById('docs-user-logs');
+      if (ref) ref.value = res.docs.reference || '';
+      if (logs) logs.value = res.docs.user_logs || '';
+      if (status) status.textContent = 'Memory loaded from Neon.';
+    }
+    window.loadDocsIntoSettings = loadDocsIntoSettings;
+
+    async function saveDocKey(key, textareaId) {
+      var status = document.getElementById('docs-status');
+      var ta = document.getElementById(textareaId);
+      if (!ta || !window.DocsClient) return;
+      if (status) status.textContent = 'Saving ' + key + '…';
+      var res = await DocsClient.save(key, ta.value);
+      if (status) {
+        status.textContent = res.ok ? ('Saved ' + key + ' to Neon.') : (res.error || 'Save failed');
+        status.className = res.ok
+          ? 'mt-2 text-[11px] text-emerald-600'
+          : 'mt-2 text-[11px] text-rose-500';
+      }
+    }
+    var btnRef = document.getElementById('docs-save-reference');
+    if (btnRef) btnRef.addEventListener('click', function () { saveDocKey('reference', 'docs-reference'); });
+    var btnLogs = document.getElementById('docs-save-user-logs');
+    if (btnLogs) btnLogs.addEventListener('click', function () { saveDocKey('user_logs', 'docs-user-logs'); });
 
     function mcpCurrentEmail() {
       const u = Auth.current();

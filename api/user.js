@@ -1,14 +1,14 @@
 /* =========================================================================
- * api/user.js — Combined Neon user data (chat history + memory docs)
+ * api/user.js — Combined Neon user data (chat history + memory docs + settings)
  * Replaces api/history.js + api/docs.js to stay under Vercel Hobby 12-fn limit.
  *
  * History:  POST { token, action: "load"|"save", sessions? }
- * Docs:     GET/POST with key=reference|user_logs or action=list
+ * Docs:     GET/POST with key=reference|user_logs|settings or action=list
  * ========================================================================= */
 
 var db = require('../lib/db');
 
-var ALLOWED_KEYS = { reference: true, user_logs: true };
+var ALLOWED_KEYS = { reference: true, user_logs: true, settings: true };
 
 var DEFAULTS = {
   reference:
@@ -28,7 +28,20 @@ var DEFAULTS = {
     '## Custom commands\n\n' +
     '- When I say "brief me", summarize in 5 bullets.\n\n' +
     '## Notes\n\n' +
-    '(Master may append light notes when memory is enabled.)\n'
+    '(Master may append light notes when memory is enabled.)\n',
+  settings: JSON.stringify({
+    displayName: '',
+    tone: 'friendly',
+    theme: 'system',
+    accent: 'indigo',
+    codeLang: 'python',
+    imageSize: '1024x1024',
+    ttsVoice: 'olivia',
+    routingMode: 'auto',
+    confirmHeavy: true,
+    compactCards: false,
+    memoryEnabled: true
+  })
 };
 
 async function resolveEmail(token) {
@@ -114,7 +127,11 @@ async function handleDocs(req, res, email, body) {
   if ((req.method === 'GET' && req.query && req.query.action === 'list') ||
       (req.method === 'POST' && body.action === 'list')) {
     var all = await sql`SELECT doc_key, content, updated_at FROM user_docs WHERE email = ${email}`;
-    var map = { reference: DEFAULTS.reference, user_logs: DEFAULTS.user_logs };
+    var map = {
+      reference: DEFAULTS.reference,
+      user_logs: DEFAULTS.user_logs,
+      settings: DEFAULTS.settings
+    };
     var updated = {};
     (all || []).forEach(function (row) {
       map[row.doc_key] = row.content;
@@ -126,7 +143,7 @@ async function handleDocs(req, res, email, body) {
 
   var key = String((req.query && req.query.key) || body.key || '').trim();
   if (!ALLOWED_KEYS[key]) {
-    res.status(400).json({ ok: false, error: 'key must be "reference" or "user_logs".' });
+    res.status(400).json({ ok: false, error: 'key must be "reference", "user_logs", or "settings".' });
     return;
   }
 
@@ -141,7 +158,7 @@ async function handleDocs(req, res, email, body) {
   if (req.method === 'POST' || req.method === 'PUT') {
     var contentIn = body.content;
     if (typeof contentIn !== 'string') {
-      res.status(400).json({ ok: false, error: 'content must be a string (markdown).' });
+      res.status(400).json({ ok: false, error: 'content must be a string (markdown or JSON).' });
       return;
     }
     if (contentIn.length > 100000) {

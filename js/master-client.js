@@ -8,11 +8,11 @@
 
   const SOURCE_LABELS = {
     'openrouter':        (d) => 'OpenRouter — ' + (d.model_used || 'fallback model'),
-    'openrouter-online': (d) => 'OpenRouter — with live web search (' + (d.model_used || 'fallback model') + ')'
+    'openrouter-online': (d) => 'OpenRouter — with live web search (' + (d.model_used || 'fallback model') + ')',
+    'vinci':             (d) => 'Vinci — ' + (d.model_used || 'forte'),
+    'llm':               (d) => (d.model_used || 'LLM')
   };
 
-  /** Safe accessor — bare PrexzyAPI throws ReferenceError under 'use strict'
-   *  when api.js failed to load. Always go through window. */
   function getPrexzyAPI() {
     return (typeof window !== 'undefined' && window.PrexzyAPI) ? window.PrexzyAPI : null;
   }
@@ -115,6 +115,18 @@
     el.textContent = text;
   }
 
+  function wireBubbleActions(box, userPrompt, copyText) {
+    if (!box || !window.OutputActions || !window.OutputActions.attachMessageActions) return;
+    try {
+      window.OutputActions.attachMessageActions(box, {
+        text: copyText || (box.innerText || ''),
+        userPrompt: userPrompt || null
+      });
+    } catch (e) {
+      console.warn('[master] wireBubbleActions', e);
+    }
+  }
+
   function buildHistoryPayload(email, sessionId) {
     const session = History.get(email, sessionId);
     if (!session) return [];
@@ -203,6 +215,7 @@
         const errText = 'Error: ' + (data.error || res.status) + (data.detail ? '\n' + data.detail : '');
         showPlain(assistantBox, errText);
         persistAssistantMessage(email, { role: 'assistant', kind: 'text', content: errText, meta: { isError: true } });
+        wireBubbleActions(assistantBox, message, errText);
         return;
       }
 
@@ -218,6 +231,7 @@
             fallback_note: data.fallback_note, agent_id: data.agent_id
           }
         });
+        wireBubbleActions(assistantBox, message, data.result || '');
         if (attachedFile) clearAttachment();
       } else {
         let text =
@@ -254,12 +268,14 @@
           warn.textContent = '⚠ PrexzyAPI not loaded — Execute unavailable. Check js/api.js.';
           assistantBox.appendChild(warn);
         }
+        wireBubbleActions(assistantBox, message, text);
       }
     } catch (e) {
       refundOnce();
       const errText = 'Request failed: ' + e.message;
       showPlain(assistantBox, errText);
       persistAssistantMessage(email, { role: 'assistant', kind: 'text', content: errText, meta: { isError: true } });
+      wireBubbleActions(assistantBox, message, errText);
     } finally {
       runBtn.disabled = false;
     }
@@ -288,7 +304,7 @@
     const labelFn = SOURCE_LABELS[data.source];
     const metaEl = document.createElement('div');
     metaEl.className = 'mt-3 pt-2 border-t border-slate-200 dark:border-slate-700 text-[11px] text-slate-400 font-mono';
-    metaEl.textContent = 'via ' + (labelFn ? labelFn(data) : data.source) +
+    metaEl.textContent = 'via ' + (labelFn ? labelFn(data) : (data.source || 'router')) +
       ' · chat/web quota isn\'t deducted for Master Agent answers';
 
     box.append(answerEl, metaEl);
@@ -308,11 +324,11 @@
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'text-xs rounded-lg bg-emerald-600 text-white px-3 py-1.5 font-medium hover:bg-emerald-700 disabled:opacity-50';
-    btn.textContent = '▶ Execute on Prexzy';
+    btn.textContent = '▶ Execute';
 
     const note = document.createElement('span');
     note.className = 'text-[11px] text-slate-400';
-    note.textContent = "runs the routed endpoint via PrexzyAPI (consumes that agent's quota)";
+    note.textContent = "runs the routed endpoint (consumes that agent's quota)";
 
     actions.append(btn, note);
     bubbleEl.appendChild(actions);
@@ -351,7 +367,7 @@
           });
           if (data && data.url && !data.video_url) data.video_url = data.url;
         } else {
-          showPlain(resultArea, 'Executing ' + endpointKey + ' on Prexzy…');
+          showPlain(resultArea, 'Executing ' + endpointKey + '…');
           data = await api.callResilient(endpointKey, routeMsg.meta.params);
         }
         renderExecutionResult(resultArea, data);
@@ -392,30 +408,26 @@
     if (found === undefined) found = [];
     if (keyHint === undefined) keyHint = '';
     if (obj == null) return found;
-
     if (typeof obj === 'string') {
-      if (/^https?:\/\//i.test(obj)) {
+      if (/^https?:\/\//i.test(obj) || /^data:/i.test(obj)) {
         const type = detectType(obj, keyHint) || 'image';
         found.push({ type: type, url: obj, key: keyHint || 'url', score: scoreFromKey(keyHint) });
       }
       return found;
     }
-
     if (Array.isArray(obj)) {
       obj.forEach(function (item) { collectMediaUrls(item, found, keyHint); });
       return found;
     }
-
     if (typeof obj === 'object') {
       var preferredKeys = ['url', 'image_url', 'img_url', 'video_url', 'audio_url', 'path', 'src', 'file', 'name'];
       for (var i = 0; i < preferredKeys.length; i++) {
         var pk = preferredKeys[i];
-        if (typeof obj[pk] === 'string' && /^https?:\/\//i.test(obj[pk])) {
+        if (typeof obj[pk] === 'string' && (/^https?:\/\//i.test(obj[pk]) || /^data:/i.test(obj[pk]))) {
           var t = detectType(obj[pk], keyHint || pk) || detectType(obj[pk], pk) || 'image';
           found.push({ type: t, url: obj[pk], key: keyHint || pk, score: scoreFromKey(keyHint || pk) + 2 });
         }
       }
-
       Object.keys(obj).forEach(function (k) {
         collectMediaUrls(obj[k], found, k);
       });
@@ -425,19 +437,16 @@
 
   function findMediaUrl(data) {
     if (!data || typeof data !== 'object') return null;
-
     var flat = ['image_url', 'img_url', 'imageUrl', 'photo_url', 'video_url', 'videoUrl', 'audio_url', 'audioUrl', 'url'];
     for (var i = 0; i < flat.length; i++) {
       var v = data[flat[i]];
-      if (typeof v === 'string' && /^https?:\/\//i.test(v)) {
+      if (typeof v === 'string' && (/^https?:\/\//i.test(v) || /^data:/i.test(v))) {
         var kind = /video/i.test(flat[i]) ? 'video' : /audio/i.test(flat[i]) ? 'audio' : 'image';
         return { kind: kind, url: v };
       }
     }
-
     var items = collectMediaUrls(data);
     if (!items.length) return null;
-
     items.sort(function (a, b) {
       var order = { image: 0, video: 1, audio: 2 };
       var da = order[a.type] != null ? order[a.type] : 9;
@@ -445,7 +454,6 @@
       if (da !== db) return da - db;
       return b.score - a.score;
     });
-
     var best = items[0];
     return { kind: best.type, url: best.url };
   }
@@ -456,12 +464,8 @@
         ? 'Generated ' + media.kind + ' for: "' + data.prompt + '"'
         : 'Done — prompt: "' + data.prompt + '"';
     }
-    if (data.source && media) {
-      return 'Generated ' + media.kind + ' via ' + data.source + '.';
-    }
-    if (data.note && media) {
-      return 'Generated ' + media.kind + '. ' + data.note;
-    }
+    if (data.source && media) return 'Generated ' + media.kind + ' via ' + data.source + '.';
+    if (data.note && media) return 'Generated ' + media.kind + '. ' + data.note;
     if (data.result || data.response || data.answer || data.message) {
       return String(data.result || data.response || data.answer || data.message);
     }
@@ -477,7 +481,6 @@
       }, data._text || 'Done.');
       return;
     }
-
     if (data && typeof data === 'object') {
       var media = findMediaUrl(data);
       if (media) {
@@ -490,7 +493,6 @@
         return;
       }
     }
-
     showPlain(box, 'Unrecognized response shape — raw output:\n' + JSON.stringify(data, null, 2));
   }
 
@@ -531,7 +533,7 @@
     };
   }
 
-  function renderStoredMessage(message, email) {
+  function renderStoredMessage(message, email, userPrompt) {
     if (message.role === 'user') {
       appendUserBubble(message);
       return;
@@ -542,14 +544,16 @@
     if (message.kind === 'text') {
       if (message.meta && message.meta.isError) {
         showPlain(box, message.content);
+        wireBubbleActions(box, userPrompt, message.content);
         return;
       }
       renderServerExecutedResult(box, {
         result: message.content,
-        source: message.meta.source,
-        agent_id: message.meta.agent_id,
-        fallback_note: message.meta.fallback_note
+        source: message.meta && message.meta.source,
+        agent_id: message.meta && message.meta.agent_id,
+        fallback_note: message.meta && message.meta.fallback_note
       });
+      wireBubbleActions(box, userPrompt, message.content);
       return;
     }
 
@@ -589,6 +593,7 @@
         appendExecuteAction(box, message, email);
       }
     }
+    wireBubbleActions(box, userPrompt, box.innerText || '');
   }
 
   function renderHistoryList(email) {
@@ -642,7 +647,11 @@
     if (!session) return;
     currentSessionId = sessionId;
     clearThreadDOM();
-    session.messages.forEach(function (m) { renderStoredMessage(m, email); });
+    var lastUserPrompt = null;
+    session.messages.forEach(function (m) {
+      if (m.role === 'user') lastUserPrompt = m.content;
+      renderStoredMessage(m, email, lastUserPrompt);
+    });
     renderHistoryList(email);
     closeDrawer();
   }

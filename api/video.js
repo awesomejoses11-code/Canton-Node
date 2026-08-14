@@ -1,28 +1,23 @@
 /* =========================================================================
  * api/video.js — Video generation with fallback chain
  *
- * Chain: Prexzy → Pixazo LTX (free) → Pyramid Flow (HF) → clean error
+ * Chain (confirmed 2026-08-14):
+ *   1. Pixazo LTX (primary)
+ *   2. Prexzy (backup)
+ *   3. Pyramid Flow / HF (last resort)
  *
  * POST /api/video
  * Body: { prompt, duration?, resolution?, imageUrl?, poll?: true }
- *
- * When poll=true (default) and Pixazo returns a task_id, this function
- * polls until COMPLETED/FAILED or timeout, then returns the final URL.
- * Vercel maxDuration is set via the export config below (Pro plan recommended).
  * ========================================================================= */
 
 const PREXZY_BASE = 'https://prexzyapis.com';
 
-/**
- * Poll Pixazo until the video is ready (or fails / times out).
- * Returns { url, status, source: 'pixazo-ltx', raw } or throws.
- */
 async function pollPixazo(taskId, apiKey, {
   intervalMs = 5000,
-  timeoutMs  = 4 * 60 * 1000   // 4 min
+  timeoutMs  = 4 * 60 * 1000
 } = {}) {
   const started = Date.now();
-  const url = `https://gateway.pixazo.ai/v2/requests/status/${encodeURIComponent(taskId)}`;
+  const url = 'https://gateway.pixazo.ai/v2/requests/status/' + encodeURIComponent(taskId);
 
   while (true) {
     const res = await fetch(url, {
@@ -31,7 +26,7 @@ async function pollPixazo(taskId, apiKey, {
 
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(`Pixazo status ${res.status}: ${text.slice(0, 200)}`);
+      throw new Error('Pixazo status ' + res.status + ': ' + text.slice(0, 200));
     }
 
     const data = await res.json();
@@ -45,183 +40,174 @@ async function pollPixazo(taskId, apiKey, {
     }
 
     if (status === 'FAILED' || status === 'ERROR') {
-      throw new Error(data.error || `Pixazo ${status}`);
+      throw new Error(data.error || ('Pixazo ' + status));
     }
 
     if (Date.now() - started > timeoutMs) {
       throw new Error('Pixazo polling timed out');
     }
 
-    await new Promise(r => setTimeout(r, intervalMs));
+    await new Promise(function (r) { setTimeout(r, intervalMs); });
   }
 }
 
-/**
- * Video generation with fallback chain:
- * Prexzy → Pixazo LTX (free) → Pyramid Flow (HF) → clean error
- */
-async function generateVideoWithFallback(prompt, options = {}) {
-  const {
-    duration = 5,
-    resolution = '720p',
-    imageUrl = null,          // optional for image-to-video
-    poll = true               // if true, wait for Pixazo result server-side
-  } = options;
+async function tryPixazo(prompt, options) {
+  const pixazoKey = process.env.PIXAZO_API_KEY;
+  if (!pixazoKey) throw new Error('PIXAZO_API_KEY not set');
 
-  // -------------------------------------------------
-  // 1. Try Prexzy first
-  // -------------------------------------------------
-  try {
-    const usp = new URLSearchParams({ prompt });
-    if (imageUrl) usp.set('image', imageUrl);
-    if (options.style) usp.set('style', options.style);
+  const body = {
+    prompt: prompt,
+    model: 'ltx-v2-3-free',
+    duration: options.duration,
+    resolution: options.resolution
+  };
+  if (options.imageUrl) body.image_url = options.imageUrl;
 
-    const res = await fetch(`${PREXZY_BASE}/ai/aiart-video?${usp.toString()}`, {
-      method: 'GET',
-      signal: AbortSignal.timeout(25000)
-    });
+  const res = await fetch('https://gateway.pixazo.ai/ltx-video/v1/text-to-video', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Ocp-Apim-Subscription-Key': pixazoKey
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30000)
+  });
 
-    if (res.ok) {
-      const ctype = (res.headers.get('content-type') || '').toLowerCase();
-      if (ctype.startsWith('video/') || ctype.includes('octet-stream')) {
-        // Rare: direct binary — we can't easily return a blob from serverless
-        // without uploading somewhere. Fall through to JSON path.
-      } else {
-        const data = await res.json().catch(() => null);
-        if (data && (data.url || data.video_url || data.video || data.task_id || data.image_url)) {
-          return {
-            ...data,
-            url: data.url || data.video_url || data.video || data.image_url || null,
-            source: 'prexzy'
-          };
-        }
-      }
-    }
-  } catch (err) {
-    console.warn('[Video] Prexzy failed → trying Pixazo LTX', err.message);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error('Pixazo ' + res.status + ': ' + text.slice(0, 300));
   }
 
-  // -------------------------------------------------
-  // 2. Fallback to Pixazo LTX (free tier)
-  // -------------------------------------------------
-  try {
-    const pixazoKey = process.env.PIXAZO_API_KEY;
-    if (!pixazoKey) throw new Error('PIXAZO_API_KEY not set');
+  const data = await res.json();
+  const taskId = data.request_id || data.id || data.job_id;
 
-    const body = {
-      prompt,
-      model: 'ltx-v2-3-free',          // free tier variant — adjust if your key uses another model id
-      duration,
-      resolution,
-      ...(imageUrl && { image_url: imageUrl })
+  if (!taskId) {
+    if (data.output && data.output.media_url) {
+      const media = data.output.media_url;
+      return {
+        url: Array.isArray(media) ? media[0] : media,
+        status: data.status || 'COMPLETED',
+        source: 'pixazo-ltx',
+        raw: data
+      };
+    }
+    throw new Error('Pixazo response missing request_id');
+  }
+
+  if (!options.poll) {
+    return {
+      task_id: taskId,
+      status: data.status || 'QUEUED',
+      poll_url: data.polling_url || null,
+      source: 'pixazo-ltx'
     };
+  }
 
-    const res = await fetch('https://gateway.pixazo.ai/ltx-video/v1/text-to-video', {
+  return await pollPixazo(taskId, pixazoKey);
+}
+
+async function tryPrexzy(prompt, options) {
+  const usp = new URLSearchParams({ prompt: prompt });
+  if (options.imageUrl) usp.set('image', options.imageUrl);
+  if (options.style) usp.set('style', options.style);
+
+  const res = await fetch(PREXZY_BASE + '/ai/aiart-video?' + usp.toString(), {
+    method: 'GET',
+    signal: AbortSignal.timeout(25000)
+  });
+
+  if (!res.ok) throw new Error('Prexzy video HTTP ' + res.status);
+
+  const data = await res.json().catch(function () { return null; });
+  if (data && (data.url || data.video_url || data.video || data.task_id)) {
+    return {
+      url: data.url || data.video_url || data.video || null,
+      task_id: data.task_id || null,
+      source: 'prexzy',
+      raw: data
+    };
+  }
+  throw new Error('Prexzy video: no usable payload');
+}
+
+async function tryPyramid(prompt, options) {
+  const hfToken = process.env.HF_TOKEN;
+  if (!hfToken) throw new Error('HF_TOKEN not set');
+
+  const res = await fetch(
+    'https://api-inference.huggingface.co/models/rain1011/pyramid-flow-miniflux',
+    {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'Ocp-Apim-Subscription-Key': pixazoKey
+        Authorization: 'Bearer ' + hfToken,
+        'Content-Type': 'application/json'
       },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(30000)
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Pixazo ${res.status}: ${text.slice(0, 300)}`);
+      body: JSON.stringify({
+        inputs: prompt,
+        parameters: {
+          num_frames: Math.round(options.duration * 24),
+          height: 384,
+          width: 640
+        }
+      }),
+      signal: AbortSignal.timeout(90000)
     }
+  );
 
-    const data = await res.json();
-    const taskId = data.request_id || data.id || data.job_id;
-
-    if (!taskId) {
-      // Some responses may already contain a media url
-      if (data.output && data.output.media_url) {
-        const media = data.output.media_url;
-        return {
-          url: Array.isArray(media) ? media[0] : media,
-          status: data.status || 'COMPLETED',
-          source: 'pixazo-ltx',
-          raw: data
-        };
-      }
-      throw new Error('Pixazo response missing request_id');
-    }
-
-    if (!poll) {
-      return {
-        task_id: taskId,
-        status: data.status || 'QUEUED',
-        poll_url: data.polling_url || null,
-        source: 'pixazo-ltx'
-      };
-    }
-
-    // Wait for completion server-side
-    return await pollPixazo(taskId, pixazoKey);
-  } catch (err) {
-    console.warn('[Video] Pixazo LTX failed → trying Pyramid Flow', err.message);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error('Pyramid Flow ' + res.status + ': ' + text.slice(0, 300));
   }
 
-  // -------------------------------------------------
-  // 3. Fallback to Pyramid Flow (Hugging Face)
-  // -------------------------------------------------
-  try {
-    const hfToken = process.env.HF_TOKEN;
-    if (!hfToken) throw new Error('HF_TOKEN not set');
-
-    // Best-effort call. Pyramid Flow public Inference API support varies;
-    // many deployments are Spaces. Adjust model id if you have a dedicated endpoint.
-    const res = await fetch(
-      'https://api-inference.huggingface.co/models/rain1011/pyramid-flow-miniflux',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${hfToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          inputs: prompt,
-          parameters: {
-            num_frames: Math.round(duration * 24),
-            height: 384,
-            width: 640
-          }
-        }),
-        signal: AbortSignal.timeout(90000)
-      }
-    );
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Pyramid Flow ${res.status}: ${text.slice(0, 300)}`);
-    }
-
-    const contentType = res.headers.get('content-type') || '';
-    if (contentType.includes('video') || contentType.includes('octet-stream')) {
-      // Binary video — cannot return a durable URL without storage.
-      // Signal the client that HF returned binary (rare path).
-      return {
-        source: 'pyramid-flow',
-        status: 'binary',
-        note: 'HF returned binary video; client should use a storage-backed path or prefer Pixazo/Prexzy.'
-      };
-    }
-
-    const data = await res.json();
+  const contentType = res.headers.get('content-type') || '';
+  if (contentType.includes('video') || contentType.includes('octet-stream')) {
     return {
-      ...data,
-      source: 'pyramid-flow'
+      source: 'pyramid-flow',
+      status: 'binary',
+      note: 'HF returned binary video; prefer Pixazo/Prexzy for durable URLs.'
     };
-  } catch (err) {
-    console.warn('[Video] Pyramid Flow also failed', err.message);
   }
 
-  // -------------------------------------------------
-  // 4. All failed → clean message
-  // -------------------------------------------------
+  const data = await res.json();
+  return Object.assign({}, data, { source: 'pyramid-flow' });
+}
+
+async function generateVideoWithFallback(prompt, options) {
+  const opts = {
+    duration: options.duration || 5,
+    resolution: options.resolution || '720p',
+    imageUrl: options.imageUrl || null,
+    poll: options.poll !== false,
+    style: options.style
+  };
+
+  const errors = [];
+
+  // 1) Pixazo primary
+  try {
+    return await tryPixazo(prompt, opts);
+  } catch (err) {
+    console.warn('[Video] Pixazo failed → Prexzy', err.message);
+    errors.push('Pixazo: ' + err.message);
+  }
+
+  // 2) Prexzy backup
+  try {
+    return await tryPrexzy(prompt, opts);
+  } catch (err) {
+    console.warn('[Video] Prexzy failed → Pyramid', err.message);
+    errors.push('Prexzy: ' + err.message);
+  }
+
+  // 3) Pyramid last resort
+  try {
+    return await tryPyramid(prompt, opts);
+  } catch (err) {
+    errors.push('Pyramid: ' + err.message);
+  }
+
   throw new Error(
-    'Video generation is temporarily unavailable. Please try again later or generate an image instead.'
+    'Video generation is temporarily unavailable. ' + errors.join(' | ')
   );
 }
 
@@ -249,17 +235,12 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const duration = Math.min(Math.max(Number(body.duration) || 5, 2), 10);
-  const resolution = body.resolution || '720p';
-  const imageUrl = body.imageUrl || body.image || null;
-  const poll = body.poll !== false; // default true
-
   try {
     const result = await generateVideoWithFallback(prompt, {
-      duration,
-      resolution,
-      imageUrl,
-      poll,
+      duration: Math.min(Math.max(Number(body.duration) || 5, 2), 10),
+      resolution: body.resolution || '720p',
+      imageUrl: body.imageUrl || body.image || null,
+      poll: body.poll !== false,
       style: body.style
     });
     res.status(200).json(result);
@@ -268,7 +249,6 @@ module.exports = async function handler(req, res) {
   }
 };
 
-// Allow longer execution when the platform plan supports it (Pro).
 module.exports.config = {
   maxDuration: 300
 };

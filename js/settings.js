@@ -14,19 +14,19 @@
   const PREFIX = 'prexzy.settings.v1';
 
   const DEFAULTS = Object.freeze({
-    displayName:  '',           // falls back to the account username
-    tone:         'friendly',   // Master Agent reply tone
-    theme:        'system',     // 'system' | 'light' | 'dark'
-    accent:       'indigo',     // see ACCENTS
-    codeLang:     'python',     // default language for the Code agent
-    imageSize:    '1024x1024',  // default size for image agents
-    ttsVoice:     'olivia',     // default voice for the TTS agent
-    routingMode:  'auto',       // 'auto' | 'manual'
-    confirmHeavy: true,         // confirm before image/music/video calls
-    compactCards: false         // denser agent cards
+    displayName:  '',
+    tone:         'friendly',
+    theme:        'system',
+    accent:       'indigo',
+    codeLang:     'python',
+    imageSize:    '1024x1024',
+    ttsVoice:     'olivia',
+    routingMode:  'auto',
+    confirmHeavy: true,
+    compactCards: false,
+    memoryEnabled: true
   });
 
-  // Allowed Master Agent tones (stored value → instruction fragment)
   const TONES = Object.freeze({
     friendly:     'warm, approachable, and encouraging',
     professional: 'professional, clear, and businesslike',
@@ -35,7 +35,6 @@
     playful:      'light, witty, and informal without being unhelpful'
   });
 
-  // Accent palettes — RGB triplets consumed by the Tailwind brand color vars.
   const ACCENTS = Object.freeze({
     indigo:  { 50: '238 242 255', 500: '99 102 241',  600: '79 70 229',   700: '67 56 202'  },
     violet:  { 50: '245 243 255', 500: '139 92 246',  600: '124 58 237',  700: '109 40 217' },

@@ -22,7 +22,7 @@
   async function list() {
     var t = token();
     if (!t) return { ok: false, error: 'Not signed in', code: 'no_session' };
-    var res = await fetch('/api/docs', {
+    var res = await fetch('/api/user', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: t, action: 'list' })
@@ -38,7 +38,7 @@
   async function get(key) {
     var t = token();
     if (!t) return { ok: false, error: 'Not signed in', code: 'no_session' };
-    var res = await fetch('/api/docs?key=' + encodeURIComponent(key) + '&token=' + encodeURIComponent(t));
+    var res = await fetch('/api/user?key=' + encodeURIComponent(key) + '&token=' + encodeURIComponent(t));
     var data = null;
     try { data = await res.json(); } catch (_) {}
     if (!res.ok || !data || !data.ok) {
@@ -50,7 +50,7 @@
   async function save(key, content) {
     var t = token();
     if (!t) return { ok: false, error: 'Not signed in', code: 'no_session' };
-    var res = await fetch('/api/docs', {
+    var res = await fetch('/api/user', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: t, key: key, content: content })

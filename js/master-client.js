@@ -1,22 +1,3 @@
-/* =========================================================================
- * master-client.js — Browser side of the Master Agent
- *
- * Sends the natural-language request to /api/master, which routes it via
- * an OpenRouter free-model chain (Free Models Router → GPT-OSS 20B →
- * Gemma 4 31B).
- *
- * For image/music/video/code/tts/html2image/image2html, /api/master only
- * returns a routing decision — this file shows it and, on "Execute on
- * Prexzy", runs the routed endpoint through PrexzyAPI so the usual
- * quota/refund rules apply.
- *
- * For chat/web, /api/master does the work itself server-side.
- *
- * Media extraction: recursive walk of Prexzy response shapes (including
- * nested image_url: [{ image: { url / path / … } }]) so images actually
- * render instead of dumping raw JSON.
- * ========================================================================= */
-
 (function () {
   'use strict';
 
@@ -29,6 +10,12 @@
     'openrouter':        (d) => 'OpenRouter — ' + (d.model_used || 'fallback model'),
     'openrouter-online': (d) => 'OpenRouter — with live web search (' + (d.model_used || 'fallback model') + ')'
   };
+
+  /** Safe accessor — bare PrexzyAPI throws ReferenceError under 'use strict'
+   *  when api.js failed to load. Always go through window. */
+  function getPrexzyAPI() {
+    return (typeof window !== 'undefined' && window.PrexzyAPI) ? window.PrexzyAPI : null;
+  }
 
   function getEmail() {
     const u = Auth.current();
@@ -103,7 +90,6 @@
     const wrap = document.createElement('div');
     wrap.className = 'flex justify-start w-full';
     const bubble = document.createElement('div');
-    // Full width of the composer column so long route dumps / images scale
     bubble.className = 'assistant-bubble w-full rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs sm:text-sm px-3 py-2';
     wrap.appendChild(bubble);
     threadEl().appendChild(wrap);
@@ -259,8 +245,14 @@
         };
         persistAssistantMessage(email, routeMsg);
 
-        if (PrexzyAPI.describe(data.endpoint) || data.agent_id === 'video') {
+        const api = getPrexzyAPI();
+        if ((api && api.describe(data.endpoint)) || data.agent_id === 'video') {
           appendExecuteAction(assistantBox, routeMsg, email);
+        } else if (!api) {
+          const warn = document.createElement('div');
+          warn.className = 'mt-2 text-[11px] text-amber-600 dark:text-amber-400 font-sans';
+          warn.textContent = '⚠ PrexzyAPI not loaded — Execute unavailable. Check js/api.js.';
+          assistantBox.appendChild(warn);
         }
       }
     } catch (e) {
@@ -327,7 +319,15 @@
 
     btn.addEventListener('click', async () => {
       const endpointKey = routeMsg.meta.endpoint;
-      const endpoint = PrexzyAPI.describe(endpointKey);
+      const api = getPrexzyAPI();
+      if (!api) {
+        const errBox = document.createElement('div');
+        errBox.className = 'mt-2 text-rose-600 dark:text-rose-400 text-xs font-sans';
+        errBox.textContent = 'PrexzyAPI is not loaded. Check that js/api.js is served.';
+        bubbleEl.appendChild(errBox);
+        return;
+      }
+      const endpoint = api.describe(endpointKey);
       const isVideo = routeMsg.meta.agent_id === 'video' || (endpointKey && endpointKey.indexOf('video.') === 0);
 
       const settings = Settings.load(email);
@@ -345,14 +345,14 @@
       try {
         let data;
         if (isVideo) {
-          data = await PrexzyAPI.generateVideo(routeMsg.meta.params || {}, {
+          data = await api.generateVideo(routeMsg.meta.params || {}, {
             loadingEl: resultArea,
             poll: true
           });
           if (data && data.url && !data.video_url) data.video_url = data.url;
         } else {
           showPlain(resultArea, 'Executing ' + endpointKey + ' on Prexzy…');
-          data = await PrexzyAPI.callResilient(endpointKey, routeMsg.meta.params);
+          data = await api.callResilient(endpointKey, routeMsg.meta.params);
         }
         renderExecutionResult(resultArea, data);
         routeMsg.meta.executed = true;
@@ -366,12 +366,6 @@
     });
   }
 
-  /* ------------------------------------------------------------------
-   * Recursive media finder (Neon Downloader style)
-   * Walks arbitrary Prexzy JSON — including nested image_url arrays like:
-   *   image_url: [{ image: { url / path / name / … }, caption }]
-   * ------------------------------------------------------------------ */
-
   function detectType(url, key) {
     const k = (key || '').toLowerCase();
     if (/cover|thumb|poster|avatar|image|photo|picture|icon|png|jpg|jpeg|webp|gif/.test(k)) return 'image';
@@ -380,7 +374,6 @@
     if (/\.(mp4|webm|mov|m3u8)(\?|$)/i.test(url)) return 'video';
     if (/\.(mp3|m4a|wav|aac|ogg)(\?|$)/i.test(url)) return 'audio';
     if (/\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(url)) return 'image';
-    // Gradio / temp CDN links without extension — prefer image when under image_* keys
     if (/image|dall|flux|txt2img|genimage/i.test(k)) return 'image';
     return null;
   }
@@ -414,11 +407,6 @@
     }
 
     if (typeof obj === 'object') {
-      // Common Gradio / Prexzy nested shapes
-      // { url: "https://..." }
-      // { path: "https://..." } or { path: "/tmp/..." } — only keep http(s)
-      // { image: { url / path / name } }
-      // { image_url: [ { image: {...} } ] }
       var preferredKeys = ['url', 'image_url', 'img_url', 'video_url', 'audio_url', 'path', 'src', 'file', 'name'];
       for (var i = 0; i < preferredKeys.length; i++) {
         var pk = preferredKeys[i];
@@ -438,7 +426,6 @@
   function findMediaUrl(data) {
     if (!data || typeof data !== 'object') return null;
 
-    // Fast path: flat fields we already knew about
     var flat = ['image_url', 'img_url', 'imageUrl', 'photo_url', 'video_url', 'videoUrl', 'audio_url', 'audioUrl', 'url'];
     for (var i = 0; i < flat.length; i++) {
       var v = data[flat[i]];
@@ -448,11 +435,9 @@
       }
     }
 
-    // Recursive walk (handles DALL·E nested image_url arrays, Gradio FileData, etc.)
     var items = collectMediaUrls(data);
     if (!items.length) return null;
 
-    // Prefer image > video > audio for generation endpoints; highest score wins within type
     items.sort(function (a, b) {
       var order = { image: 0, video: 1, audio: 2 };
       var da = order[a.type] != null ? order[a.type] : 9;
@@ -519,14 +504,19 @@
     el.src = media.url;
     if (media.kind !== 'image') el.controls = true;
     el.className = 'max-w-full rounded-lg';
-    var link = document.createElement('a');
-    link.href = media.url;
-    link.target = '_blank';
-    link.rel = 'noopener';
-    link.download = 'canton-node-result';
-    link.className = 'block mt-2 text-brand-600 dark:text-brand-500 underline text-xs';
-    link.textContent = '⬇ Download';
-    box.append(captionEl, el, link);
+    box.append(captionEl, el);
+    if (window.OutputActions && window.OutputActions.attachMediaControls) {
+      window.OutputActions.attachMediaControls(box, el, media.url, media.kind, 'canton-node-' + media.kind);
+    } else {
+      var link = document.createElement('a');
+      link.href = media.url;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.download = 'canton-node-result';
+      link.className = 'block mt-2 text-brand-600 dark:text-brand-500 underline text-xs';
+      link.textContent = '⬇ Download';
+      box.appendChild(link);
+    }
   }
 
   function summarizeForStorage(resultArea) {
@@ -593,8 +583,11 @@
         resultArea.appendChild(note);
       }
       box.appendChild(resultArea);
-    } else if (PrexzyAPI.describe(message.meta.endpoint) || message.meta.agent_id === 'video') {
-      appendExecuteAction(box, message, email);
+    } else {
+      const api = getPrexzyAPI();
+      if ((api && api.describe(message.meta.endpoint)) || message.meta.agent_id === 'video') {
+        appendExecuteAction(box, message, email);
+      }
     }
   }
 

@@ -1,4 +1,4 @@
-/* api/master.js — compact master (Chrome-safe restore + attachment analyze + memory) */
+/* api/master.js — compact master (chat + vision + web search + memory) */
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const VINCI_URL = 'https://vinci.getsimpledirect.com/api/v1/chat/completions';
 const HF_URL = 'https://router.huggingface.co/v1/chat/completions';
@@ -47,6 +47,16 @@ function buildThinking(message, route) {
   ].join('\n');
 }
 
+function wantsWeb(message) {
+  var m = String(message || '').toLowerCase();
+  if (/\b(web search|search the web|google|look up|lookup|browse the web|internet search)\b/.test(m)) return true;
+  if (/\b(latest|current|today'?s|right now|as of|live|real[- ]?time)\b/.test(m)) return true;
+  if (/\b(news|price of|stock|who is|what is happening|weather in)\b/.test(m)) return true;
+  if (/\b(have you forgotten|can you search|use (your )?web|search (online|the net))\b/.test(m)) return true;
+  if (/\b(dex|debank|gecko|coingecko|token (address|contract)|on[- ]chain)\b/.test(m)) return true;
+  return false;
+}
+
 function heuristicRoute(message, mcpTools) {
   var m = message.toLowerCase();
   if (/\b(ocr|read (the )?text|extract text|describe (this |the )?(image|photo)|analyze (this |the )?(image|photo|screenshot)|image.?to.?html|website from image|image website)\b/.test(m))
@@ -61,8 +71,8 @@ function heuristicRoute(message, mcpTools) {
     return { agent_id: 'tts', endpoint: 'tts.default', params: { text: message }, reasoning: 'Heuristic: TTS' };
   if (/\b(browse|visit (this |the )?page|scrape|open (this |the )?url)\b/.test(m) || (/https?:\/\//.test(message) && /\b(browse|visit|open|scrape|read)\b/.test(m)))
     return { agent_id: 'browse', endpoint: 'kernel.browse', params: { prompt: message }, reasoning: 'Heuristic: browse' };
-  if (/\b(search the web|look up|latest news|current events)\b/.test(m))
-    return { agent_id: 'web', endpoint: 'chat.askgpt5', params: { prompt: message, web: true }, reasoning: 'Heuristic: web' };
+  if (wantsWeb(message))
+    return { agent_id: 'web', endpoint: 'web.search', params: { prompt: message, web: true }, reasoning: 'Heuristic: web search' };
   if (mcpTools && mcpTools.length) {
     var wants = /\b(coingecko|mcp|price|crypto|bitcoin|btc|ethereum)\b/i.test(message);
     if (wants) {
@@ -73,16 +83,74 @@ function heuristicRoute(message, mcpTools) {
   return null;
 }
 
-function buildChatSystemPrompt(prefs, memory) {
+/** Free DuckDuckGo HTML fallback (no key). Returns markdown snippet or ''. */
+async function duckDuckGoSearch(query) {
+  try {
+    var q = encodeURIComponent(String(query || '').slice(0, 200));
+    var url = 'https://html.duckduckgo.com/html/?q=' + q;
+    var resp = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; CantonNode/1.0)',
+        Accept: 'text/html'
+      },
+      signal: AbortSignal.timeout(12000)
+    });
+    if (!resp.ok) return '';
+    var html = await resp.text();
+    var results = [];
+    var re = /<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+    var snipRe = /<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/a>|<div[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/div>/gi;
+    var m;
+    while ((m = re.exec(html)) && results.length < 5) {
+      var href = m[1];
+      var title = m[2].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+      // DDG wraps redirects — extract uddg=
+      var uddg = href.match(/[?&]uddg=([^&]+)/);
+      if (uddg) {
+        try { href = decodeURIComponent(uddg[1]); } catch (_) {}
+      }
+      results.push({ title: title, url: href });
+    }
+    // second pass for snippets in order
+    var snippets = [];
+    while ((m = snipRe.exec(html)) && snippets.length < 5) {
+      snippets.push(String(m[1] || m[2] || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim());
+    }
+    if (!results.length) return '';
+    var lines = ['Web search results (DuckDuckGo):'];
+    for (var i = 0; i < results.length; i++) {
+      lines.push((i + 1) + '. **' + results[i].title + '**');
+      lines.push('   ' + results[i].url);
+      if (snippets[i]) lines.push('   ' + snippets[i].slice(0, 240));
+    }
+    return lines.join('\n');
+  } catch (_) {
+    return '';
+  }
+}
+
+function buildChatSystemPrompt(prefs, memory, webMode) {
   var name = (prefs && prefs.displayName) ? String(prefs.displayName).trim() : '';
   var tone = (prefs && prefs.tone) ? String(prefs.tone) : 'friendly';
   var lines = [
-    'You are the Canton Node Master Agent — a multi-tool assistant (chat, image, video, music, TTS, code, MCP, browse).',
-    'Always answer in clean standard Markdown, like a GitHub README: clear headings, short paragraphs, and bullet lists when helpful.',
-    'Do not overuse bold or italic markers. Prefer plain prose and structured lists.',
-    'Never include internal hashes, request IDs, raw JSON, or tool dumps unless the user explicitly asks for them.',
-    'Never claim you lack tools when a suitable tool exists; for generation tasks, the client may show an Execute control.'
+    'You are the Canton Node Master Agent — a multi-tool assistant.',
+    'Capabilities you DO have in this product:',
+    '- Chat / reasoning / coding help',
+    '- Image, video, music, and TTS generation (client shows Execute when routed)',
+    '- File / image analysis (OCR, vision)',
+    '- Web search and page browse when the request needs live or online information',
+    '- MCP tools the user connected in Settings',
+    '- Persistent memory files (reference.md + user_logs.md) injected below when enabled',
+    'Never claim you lack web search, browsing, or tools when this system is providing them.',
+    'If web search results are included in the user message, ground your answer in them and cite links in Markdown.',
+    'Always answer in clean standard Markdown (headings, short paragraphs, bullets when helpful).',
+    'Do not dump internal hashes, request IDs, or raw JSON unless the user asks.',
+    'If the user asks you to remember something lasting, acknowledge it and restate what you will keep in memory.'
   ];
+  if (webMode) {
+    lines.push('This turn requires up-to-date information. Use the provided search results; do not invent URLs or prices.');
+  }
   if (name) lines.push('Address the user as "' + name.replace(/"/g, '') + '" when natural.');
   lines.push('Reply tone: ' + tone + '.');
   if (memory && memory.enabled) {
@@ -99,10 +167,77 @@ function buildChatSystemPrompt(prefs, memory) {
   return lines.join('\n');
 }
 
-async function tryGenerateAnswer(message, history, prefs, memory) {
+async function tryGenerateAnswer(message, history, prefs, memory, opts) {
+  opts = opts || {};
+  var webMode = !!opts.web;
   var attempts = [];
   var prior = (history || []).slice(-8);
-  var system = buildChatSystemPrompt(prefs || {}, memory || null);
+  var userContent = message;
+  var searchNote = '';
+
+  if (webMode) {
+    // 1) Prefer OpenRouter with web plugin (works even on free models; may cost small search fee)
+    var orKey = process.env.OPENROUTER_API_KEY;
+    if (orKey) {
+      var orModels = [
+        'meta-llama/llama-3.3-70b-instruct:free',
+        'google/gemma-3-27b-it:free'
+      ];
+      for (var oi = 0; oi < orModels.length; oi++) {
+        try {
+          var orBody = {
+            model: orModels[oi],
+            messages: [
+              { role: 'system', content: buildChatSystemPrompt(prefs || {}, memory || null, true) }
+            ].concat(prior).concat([{ role: 'user', content: message }]),
+            max_tokens: 1200,
+            plugins: [{ id: 'web', max_results: 5 }]
+          };
+          var orResp = await fetch(OPENROUTER_URL, {
+            method: 'POST',
+            headers: authHeaders({ id: 'openrouter' }, orKey),
+            body: JSON.stringify(orBody),
+            signal: AbortSignal.timeout(60000)
+          });
+          if (orResp.ok) {
+            var orData = await orResp.json();
+            var orMsg = orData && orData.choices && orData.choices[0] && orData.choices[0].message;
+            var orText = orMsg && typeof orMsg.content === 'string' ? orMsg.content.trim() : '';
+            if (orText) {
+              return {
+                text: orText,
+                model: 'OR web · ' + orModels[oi].split('/')[1],
+                provider: 'openrouter',
+                attempts: attempts,
+                web: true
+              };
+            }
+            attempts.push({ endpoint: orModels[oi] + '+web', error: 'empty' });
+          } else {
+            attempts.push({ endpoint: orModels[oi] + '+web', error: 'HTTP ' + orResp.status });
+          }
+        } catch (e) {
+          attempts.push({ endpoint: orModels[oi] + '+web', error: e.message });
+        }
+      }
+    } else {
+      attempts.push({ endpoint: 'openrouter+web', error: 'key missing' });
+    }
+
+    // 2) DuckDuckGo fallback → inject into prompt, answer with Vinci→OR→HF chain
+    searchNote = await duckDuckGoSearch(message);
+    if (searchNote) {
+      userContent =
+        message +
+        '\n\n---\n' +
+        searchNote +
+        '\n---\nUse the search results above. Cite links in Markdown. If results are thin, say what is missing.';
+    } else {
+      attempts.push({ endpoint: 'duckduckgo', error: 'no results' });
+    }
+  }
+
+  var system = buildChatSystemPrompt(prefs || {}, memory || null, webMode);
   for (var pi = 0; pi < LLM_CHAIN.length; pi++) {
     var provider = LLM_CHAIN[pi];
     var apiKey = process.env[provider.envKey];
@@ -110,23 +245,36 @@ async function tryGenerateAnswer(message, history, prefs, memory) {
     for (var mi = 0; mi < provider.models.length; mi++) {
       var m = provider.models[mi];
       try {
-        var messages = [{ role: 'system', content: system }].concat(prior).concat([{ role: 'user', content: message }]);
+        var messages = [{ role: 'system', content: system }].concat(prior).concat([{ role: 'user', content: userContent }]);
+        var body = { model: m.model, messages: messages, max_tokens: webMode ? 1200 : 800 };
+        // OpenRouter: also attach web plugin when in web mode as extra safety
+        if (webMode && provider.id === 'openrouter') {
+          body.plugins = [{ id: 'web', max_results: 5 }];
+        }
         var resp = await fetch(provider.url, {
           method: 'POST',
           headers: authHeaders(provider, apiKey),
-          body: JSON.stringify({ model: m.model, messages: messages, max_tokens: 800 }),
-          signal: AbortSignal.timeout(45000)
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(webMode ? 60000 : 45000)
         });
         if (!resp.ok) { attempts.push({ endpoint: m.model, error: 'HTTP ' + resp.status }); continue; }
         var data = await resp.json();
         var msg = data && data.choices && data.choices[0] && data.choices[0].message;
         var text = msg && typeof msg.content === 'string' ? msg.content.trim() : '';
-        if (text) return { text: text, model: m.label, provider: provider.id, attempts: attempts };
+        if (text) {
+          return {
+            text: text,
+            model: m.label + (webMode ? ' · web' : ''),
+            provider: provider.id,
+            attempts: attempts,
+            web: webMode
+          };
+        }
         attempts.push({ endpoint: m.model, error: 'empty' });
       } catch (e) { attempts.push({ endpoint: m.model, error: e.message }); }
     }
   }
-  return { text: null, model: null, provider: null, attempts: attempts };
+  return { text: null, model: null, provider: null, attempts: attempts, web: webMode };
 }
 
 module.exports = async function handler(req, res) {
@@ -155,7 +303,9 @@ module.exports = async function handler(req, res) {
     }
     if (attachment && (attachment.dataUrl || attachment.text)) {
       var t0 = Date.now();
-      var analyzed = await analyzeAttachment(message, attachment, history, prefs, tryGenerateAnswer);
+      var analyzed = await analyzeAttachment(message, attachment, history, prefs, function (msg, hist, pr, mem) {
+        return tryGenerateAnswer(msg, hist, pr, mem, { web: false });
+      });
       res.status(200).json({
         ok: true, agent_id: 'analyze', endpoint: 'vision.analyze',
         params: { name: attachment.name, type: attachment.type, kind: attachment.kind },
@@ -169,6 +319,8 @@ module.exports = async function handler(req, res) {
     var route = heuristicRoute(message, mcpTools);
     if (!route) route = { agent_id: 'chat', endpoint: 'chat.answer', params: { prompt: message }, reasoning: 'Default chat' };
     route.thinking = buildThinking(message, route);
+
+    // Kernel browse for explicit URL visits
     if (route.agent_id === 'browse' && kernelLib && kernelLib.tryKernelBrowse) {
       try {
         var k = await kernelLib.tryKernelBrowse(message);
@@ -182,18 +334,28 @@ module.exports = async function handler(req, res) {
         }
       } catch (_) {}
     }
+
     if (route.agent_id === 'chat' || route.agent_id === 'web' || route.agent_id === 'analyze') {
-      var gen = await tryGenerateAnswer(message, history, prefs, memory);
+      var useWeb = route.agent_id === 'web' || wantsWeb(message);
+      var gen = await tryGenerateAnswer(message, history, prefs, memory, { web: useWeb });
       res.status(200).json({
-        ok: true, agent_id: route.agent_id, endpoint: route.endpoint,
-        params: route.params || {}, reasoning: route.reasoning,
-        thinking: route.thinking, thinking_ms: 0,
+        ok: true,
+        agent_id: useWeb ? 'web' : route.agent_id,
+        endpoint: useWeb ? 'web.search' : route.endpoint,
+        params: route.params || {},
+        reasoning: useWeb ? (route.reasoning || 'Web-enabled answer') : route.reasoning,
+        thinking: route.thinking,
+        thinking_ms: 0,
         server_executed: !!gen.text,
-        result: gen.text || 'No model answered. Check API keys.',
-        model_used: gen.model, provider: gen.provider, attempts: gen.attempts || []
+        result: gen.text || 'No model answered. Check API keys (VINCI / OPENROUTER) and try again.',
+        model_used: gen.model,
+        provider: gen.provider,
+        attempts: gen.attempts || [],
+        web: !!gen.web
       });
       return;
     }
+
     res.status(200).json({
       ok: true, agent_id: route.agent_id, endpoint: route.endpoint,
       params: route.params || {}, reasoning: route.reasoning,

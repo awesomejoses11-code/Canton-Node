@@ -34,6 +34,7 @@
       --brand-600: 79 70 229;
       --brand-700: 67 56 202;
     }
+    .quota-bar { transition: width .3s ease; }
     .markdown-body pre { overflow-x: auto; }
     .markdown-body code { font-size: 0.85em; }
   </style>
@@ -125,11 +126,17 @@
         </section>
       </div>
 
+      <!-- Limits: ids must match hub.js (quota-grid + quota-date) -->
       <div id="tab-content-limits" class="tab-content hidden space-y-6">
         <section class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-5">
-          <h2 class="text-base font-semibold mb-2">Daily limits</h2>
-          <p class="text-xs text-slate-500 mb-4">Per account on this device. Resets at local midnight.</p>
-          <div id="limits-grid" class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm"></div>
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <h2 class="text-base font-semibold">Today's Quota</h2>
+              <p class="text-xs text-slate-500 dark:text-slate-400">Per account on this device. Resets at local midnight.</p>
+            </div>
+            <span id="quota-date" class="text-xs font-mono text-slate-400"></span>
+          </div>
+          <div id="quota-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>
         </section>
       </div>
 
@@ -297,7 +304,8 @@
       const historyToggle = document.getElementById('btn-history-toggle');
       if (historyToggle) historyToggle.classList.toggle('hidden', activeTab !== 'models');
       if (activeTab !== 'models' && window.MasterChat) window.MasterChat.closeDrawer();
-      if (activeTab === 'limits' && window.Quota && window.Quota.renderLimits) window.Quota.renderLimits();
+      // hub.js paints #quota-grid — not Quota.renderLimits (that never existed)
+      if (activeTab === 'limits' && window.Hub && Hub.refresh) Hub.refresh();
       if (activeTab === 'settings' && window.renderMcpList) window.renderMcpList();
     }
     document.querySelectorAll('.tab-btn').forEach(btn =>

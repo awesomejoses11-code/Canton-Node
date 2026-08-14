@@ -195,10 +195,20 @@
     const attachmentInfo = attachedFile ? { name: attachedFile.name, type: attachedFile.type } : null;
 
     try {
+      const user = Auth.current() || {};
+      const prefs = {
+        displayName: (settings.displayName || user.username || '').trim(),
+        tone: settings.tone || 'friendly'
+      };
       const res = await fetch('/api/master', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ message, attachment: attachmentInfo, history: priorHistory })
+        body: JSON.stringify({
+          message,
+          attachment: attachmentInfo,
+          history: priorHistory,
+          prefs: prefs
+        })
       });
       const data = await res.json();
 

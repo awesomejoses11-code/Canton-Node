@@ -2,9 +2,9 @@
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const VINCI_URL = 'https://vinci.getsimpledirect.com/api/v1/chat/completions';
 const HF_URL = 'https://router.huggingface.co/v1/chat/completions';
-var analyzeAttachment = require('./analyze-attachment').analyzeAttachment;
+var analyzeAttachment = require('../lib/analyze-attachment').analyzeAttachment;
 var kernelLib = null;
-try { kernelLib = require('./kernel-lib'); } catch (_) { kernelLib = null; }
+try { kernelLib = require('../lib/kernel-lib'); } catch (_) { kernelLib = null; }
 
 const LLM_CHAIN = [
   { id: 'vinci', url: VINCI_URL, envKey: 'VINCI_API_KEY', models: [{ model: 'forte', label: 'Vinci Forte' }] },
@@ -110,27 +110,20 @@ async function tryGenerateAnswer(message, history, prefs, memory) {
     for (var mi = 0; mi < provider.models.length; mi++) {
       var m = provider.models[mi];
       try {
-        var messages = [
-          { role: 'system', content: system }
-        ].concat(prior).concat([{ role: 'user', content: message }]);
+        var messages = [{ role: 'system', content: system }].concat(prior).concat([{ role: 'user', content: message }]);
         var resp = await fetch(provider.url, {
           method: 'POST',
           headers: authHeaders(provider, apiKey),
           body: JSON.stringify({ model: m.model, messages: messages, max_tokens: 800 }),
           signal: AbortSignal.timeout(45000)
         });
-        if (!resp.ok) {
-          attempts.push({ endpoint: m.model, error: 'HTTP ' + resp.status });
-          continue;
-        }
+        if (!resp.ok) { attempts.push({ endpoint: m.model, error: 'HTTP ' + resp.status }); continue; }
         var data = await resp.json();
         var msg = data && data.choices && data.choices[0] && data.choices[0].message;
         var text = msg && typeof msg.content === 'string' ? msg.content.trim() : '';
         if (text) return { text: text, model: m.label, provider: provider.id, attempts: attempts };
         attempts.push({ endpoint: m.model, error: 'empty' });
-      } catch (e) {
-        attempts.push({ endpoint: m.model, error: e.message });
-      }
+      } catch (e) { attempts.push({ endpoint: m.model, error: e.message }); }
     }
   }
   return { text: null, model: null, provider: null, attempts: attempts };
@@ -138,10 +131,7 @@ async function tryGenerateAnswer(message, history, prefs, memory) {
 
 module.exports = async function handler(req, res) {
   try {
-    if (req.method !== 'POST') {
-      res.status(405).json({ error: 'Method not allowed. Use POST.' });
-      return;
-    }
+    if (req.method !== 'POST') { res.status(405).json({ error: 'Method not allowed. Use POST.' }); return; }
     var body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
     var message = String(body.message || '').trim();
     var prefs = (body.prefs && typeof body.prefs === 'object') ? body.prefs : {};
@@ -155,43 +145,30 @@ module.exports = async function handler(req, res) {
         .slice(-12)
         .map(function (m) { return { role: m.role, content: String(m.content).slice(0, 2000) }; });
     }
-
     if (!message && !(attachment && (attachment.dataUrl || attachment.text))) {
-      res.status(400).json({ error: 'Missing "message" (or attach a file).' });
-      return;
+      res.status(400).json({ error: 'Missing "message" (or attach a file).' }); return;
     }
     if (!message && attachment) {
       message = attachment.kind === 'image'
         ? 'Analyze this image. Describe it, OCR any text, and note important details.'
         : 'Analyze this file and summarize the important points.';
     }
-
     if (attachment && (attachment.dataUrl || attachment.text)) {
       var t0 = Date.now();
       var analyzed = await analyzeAttachment(message, attachment, history, prefs, tryGenerateAnswer);
       res.status(200).json({
-        ok: true,
-        agent_id: 'analyze',
-        endpoint: 'vision.analyze',
+        ok: true, agent_id: 'analyze', endpoint: 'vision.analyze',
         params: { name: attachment.name, type: attachment.type, kind: attachment.kind },
         reasoning: 'Attachment analysis (OCR / vision / text)',
-        thinking: analyzed.thinking || null,
-        thinking_ms: Date.now() - t0,
-        server_executed: true,
-        result: analyzed.text,
-        model_used: analyzed.model,
-        provider: analyzed.provider,
-        attempts: analyzed.attempts || []
+        thinking: analyzed.thinking || null, thinking_ms: Date.now() - t0,
+        server_executed: true, result: analyzed.text,
+        model_used: analyzed.model, provider: analyzed.provider, attempts: analyzed.attempts || []
       });
       return;
     }
-
     var route = heuristicRoute(message, mcpTools);
-    if (!route) {
-      route = { agent_id: 'chat', endpoint: 'chat.answer', params: { prompt: message }, reasoning: 'Default chat' };
-    }
+    if (!route) route = { agent_id: 'chat', endpoint: 'chat.answer', params: { prompt: message }, reasoning: 'Default chat' };
     route.thinking = buildThinking(message, route);
-
     if (route.agent_id === 'browse' && kernelLib && kernelLib.tryKernelBrowse) {
       try {
         var k = await kernelLib.tryKernelBrowse(message);
@@ -199,42 +176,28 @@ module.exports = async function handler(req, res) {
           res.status(200).json({
             ok: true, agent_id: 'browse', endpoint: 'kernel.browse',
             thinking: route.thinking, thinking_ms: 0,
-            server_executed: true, result: k.text || k.result,
-            reasoning: route.reasoning
+            server_executed: true, result: k.text || k.result, reasoning: route.reasoning
           });
           return;
         }
       } catch (_) {}
     }
-
     if (route.agent_id === 'chat' || route.agent_id === 'web' || route.agent_id === 'analyze') {
       var gen = await tryGenerateAnswer(message, history, prefs, memory);
       res.status(200).json({
-        ok: true,
-        agent_id: route.agent_id,
-        endpoint: route.endpoint,
-        params: route.params || {},
-        reasoning: route.reasoning,
-        thinking: route.thinking,
-        thinking_ms: 0,
+        ok: true, agent_id: route.agent_id, endpoint: route.endpoint,
+        params: route.params || {}, reasoning: route.reasoning,
+        thinking: route.thinking, thinking_ms: 0,
         server_executed: !!gen.text,
         result: gen.text || 'No model answered. Check API keys.',
-        model_used: gen.model,
-        provider: gen.provider,
-        attempts: gen.attempts || []
+        model_used: gen.model, provider: gen.provider, attempts: gen.attempts || []
       });
       return;
     }
-
     res.status(200).json({
-      ok: true,
-      agent_id: route.agent_id,
-      endpoint: route.endpoint,
-      params: route.params || {},
-      reasoning: route.reasoning,
-      thinking: route.thinking,
-      thinking_ms: 0,
-      server_executed: false
+      ok: true, agent_id: route.agent_id, endpoint: route.endpoint,
+      params: route.params || {}, reasoning: route.reasoning,
+      thinking: route.thinking, thinking_ms: 0, server_executed: false
     });
   } catch (err) {
     console.error('[master]', err);

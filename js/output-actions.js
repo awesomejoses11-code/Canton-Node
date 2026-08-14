@@ -1,5 +1,5 @@
 /* =========================================================================
- * output-actions.js — Copy/Download controls for generated output.
+ * output-actions.js — Copy / Download / Edit / Refresh controls
  *
  * Every image, audio, video, and code block the app renders should be
  * independently downloadable or copyable, without depending on the user
@@ -24,9 +24,13 @@
  *   already touched. Called automatically from master-client.js's
  *   renderMarkdown(), so any answer with code fences gets per-block
  *   controls with no extra wiring at the call site.
+ *
+ * attachMessageActions(box, opts)
+ *   Adds Copy / Edit / Refresh under an assistant bubble (route cards,
+ *   chat answers, execution results).
  * ========================================================================= */
 
-(function () {
+(function (global) {
   'use strict';
 
   const BTN_CLASS =
@@ -43,11 +47,11 @@
   }
 
   function flash(btn, text, ms) {
-    if (btn.dataset.flashing) return; // avoid stacking timeouts on fast double-clicks
+    if (btn.dataset.flashing) return;
     const original = btn.textContent;
     btn.dataset.flashing = '1';
     btn.textContent = text;
-    setTimeout(() => {
+    setTimeout(function () {
       btn.textContent = original;
       delete btn.dataset.flashing;
     }, ms || 1200);
@@ -73,25 +77,24 @@
     document.body.appendChild(a);
     a.click();
     a.remove();
-    setTimeout(() => URL.revokeObjectURL(objUrl), 4000);
+    setTimeout(function () { URL.revokeObjectURL(objUrl); }, 4000);
   }
 
   async function downloadMedia(url, filename, btn) {
     try {
-      // blob: URLs are already local — skip the network round-trip.
-      let blob;
+      var blob;
       if (/^blob:/i.test(url)) {
-        const res = await fetch(url);
+        var res = await fetch(url);
         blob = await res.blob();
+      } else if (/^data:/i.test(url)) {
+        var r = await fetch(url);
+        blob = await r.blob();
       } else {
         blob = await fetchAsBlob(url);
       }
       triggerBlobDownload(blob, filename);
       flash(btn, '✓ Saved');
     } catch (e) {
-      // Cross-origin without CORS — the `download` attribute is ignored by
-      // browsers on cross-origin links, so a plain <a download> silently
-      // just navigates. Open it directly instead so the user can Save As.
       window.open(url, '_blank', 'noopener');
       flash(btn, 'Opened ↗', 1500);
     }
@@ -101,9 +104,9 @@
     try {
       if (!navigator.clipboard) throw new Error('no clipboard API');
       await navigator.clipboard.writeText(text);
-      flash(btn, okLabel || '✓ Copied');
+      if (btn) flash(btn, okLabel || '✓ Copied');
     } catch (e) {
-      const ta = document.createElement('textarea');
+      var ta = document.createElement('textarea');
       ta.value = text;
       ta.style.position = 'fixed';
       ta.style.opacity = '0';
@@ -111,9 +114,9 @@
       ta.select();
       try {
         document.execCommand('copy');
-        flash(btn, okLabel || '✓ Copied');
+        if (btn) flash(btn, okLabel || '✓ Copied');
       } catch (e2) {
-        flash(btn, 'Copy failed', 1500);
+        if (btn) flash(btn, 'Copy failed', 1500);
       }
       ta.remove();
     }
@@ -122,34 +125,44 @@
   async function copyImageToClipboard(url, btn) {
     try {
       if (!navigator.clipboard || !window.ClipboardItem) throw new Error('unsupported');
-      const blob = await fetchAsBlob(url);
-      const item = new ClipboardItem({ [blob.type || 'image/png']: blob });
+      var blob;
+      if (/^data:/i.test(url) || /^blob:/i.test(url)) {
+        var r = await fetch(url);
+        blob = await r.blob();
+      } else {
+        blob = await fetchAsBlob(url);
+      }
+      var item = new ClipboardItem({ [blob.type || 'image/png']: blob });
       await navigator.clipboard.write([item]);
       flash(btn, '✓ Copied');
     } catch (e) {
-      // Clipboard image writes need same-origin/CORS + browser support —
-      // fall back to copying the link so the action still does *something*.
       await copyText(url, btn, '✓ Link copied');
     }
   }
 
   function attachMediaControls(container, mediaEl, url, kind, filenameBase) {
-    const row = document.createElement('div');
-    row.className = 'mt-2 flex items-center gap-2 flex-wrap';
+    if (!container) return null;
+    if (container.querySelector('[data-oa-media]')) return null;
 
-    const dl = actionBtn('⬇ Download', 'Save this ' + kind + ' to your device');
-    const ext = extFromUrl(url, kind);
-    dl.addEventListener('click', () => downloadMedia(url, (filenameBase || 'canton-node-' + kind) + '.' + ext, dl));
+    var row = document.createElement('div');
+    row.setAttribute('data-oa-media', '1');
+    row.className = 'mt-2 flex items-center gap-2 flex-wrap font-sans';
+
+    var dl = actionBtn('⬇ Download', 'Save this ' + kind + ' to your device');
+    var ext = extFromUrl(url, kind);
+    dl.addEventListener('click', function () {
+      downloadMedia(url, (filenameBase || 'canton-node-' + kind) + '.' + ext, dl);
+    });
     row.appendChild(dl);
 
     if (kind === 'image') {
-      const cp = actionBtn('⧉ Copy image', 'Copy image to clipboard');
-      cp.addEventListener('click', () => copyImageToClipboard(url, cp));
+      var cp = actionBtn('⧉ Copy image', 'Copy image to clipboard');
+      cp.addEventListener('click', function () { copyImageToClipboard(url, cp); });
       row.appendChild(cp);
     } else {
-      const cp = actionBtn('⧉ Copy link', 'Copy the media URL');
-      cp.addEventListener('click', () => copyText(url, cp));
-      row.appendChild(cp);
+      var cp2 = actionBtn('⧉ Copy link', 'Copy the media URL');
+      cp2.addEventListener('click', function () { copyText(url, cp2); });
+      row.appendChild(cp2);
     }
 
     container.appendChild(row);
@@ -157,16 +170,20 @@
   }
 
   function attachCodeControls(container, code, filenameBase, ext) {
-    const row = document.createElement('div');
-    row.className = 'mt-2 flex items-center gap-2 flex-wrap';
+    if (!container) return null;
+    var row = document.createElement('div');
+    row.className = 'mt-2 flex items-center gap-2 flex-wrap font-sans';
 
-    const cp = actionBtn('⧉ Copy code', 'Copy to clipboard');
-    cp.addEventListener('click', () => copyText(code, cp));
+    var cp = actionBtn('⧉ Copy code', 'Copy to clipboard');
+    cp.addEventListener('click', function () { copyText(code, cp); });
     row.appendChild(cp);
 
-    const dl = actionBtn('⬇ Download', 'Save as a file');
-    dl.addEventListener('click', () => {
-      triggerBlobDownload(new Blob([code], { type: 'text/plain' }), (filenameBase || 'canton-node-code') + '.' + (ext || 'txt'));
+    var dl = actionBtn('⬇ Download', 'Save as a file');
+    dl.addEventListener('click', function () {
+      triggerBlobDownload(
+        new Blob([code], { type: 'text/plain' }),
+        (filenameBase || 'canton-node-code') + '.' + (ext || 'txt')
+      );
       flash(dl, '✓ Saved');
     });
     row.appendChild(dl);
@@ -175,9 +192,7 @@
     return row;
   }
 
-  // Fenced-code language tag → sensible file extension, so downloads open
-  // with the right association instead of always landing as .txt.
-  const LANG_EXT = {
+  var LANG_EXT = {
     javascript: 'js', js: 'js', jsx: 'jsx', typescript: 'ts', ts: 'ts', tsx: 'tsx',
     python: 'py', py: 'py', java: 'java', c: 'c', cpp: 'cpp', 'c++': 'cpp',
     csharp: 'cs', 'c#': 'cs', html: 'html', xml: 'xml', css: 'css', json: 'json',
@@ -187,17 +202,70 @@
 
   function enhanceCodeBlocks(root) {
     if (!root || !root.querySelectorAll) return;
-    root.querySelectorAll('pre').forEach((pre, i) => {
+    root.querySelectorAll('pre').forEach(function (pre, i) {
       if (pre.dataset.actionsAttached) return;
       pre.dataset.actionsAttached = '1';
-      const codeEl = pre.querySelector('code') || pre;
-      const langMatch = /language-([\w+#]+)/.exec(codeEl.className || '');
-      const lang = langMatch ? langMatch[1].toLowerCase() : '';
-      const wrap = document.createElement('div');
+      var codeEl = pre.querySelector('code') || pre;
+      var langMatch = /language-([\w+#]+)/.exec(codeEl.className || '');
+      var lang = langMatch ? langMatch[1].toLowerCase() : '';
+      var wrap = document.createElement('div');
       pre.insertAdjacentElement('afterend', wrap);
       attachCodeControls(wrap, codeEl.textContent, 'canton-node-snippet-' + (i + 1), LANG_EXT[lang] || 'txt');
     });
   }
 
-  window.OutputActions = { attachMediaControls, attachCodeControls, enhanceCodeBlocks, copyText };
-})();
+  function attachMessageActions(box, opts) {
+    opts = opts || {};
+    if (!box || box.querySelector('[data-oa]')) return;
+
+    var bar = document.createElement('div');
+    bar.setAttribute('data-oa', '1');
+    bar.className = 'flex flex-wrap gap-1.5 mt-2 pt-2 border-t border-slate-200 dark:border-slate-700 font-sans';
+
+    var copyBtn = actionBtn('Copy', 'Copy response to clipboard');
+    copyBtn.addEventListener('click', function () {
+      var text = opts.text || box.innerText || '';
+      copyText(text, copyBtn);
+    });
+    bar.appendChild(copyBtn);
+
+    if (opts.userPrompt) {
+      var editBtn = actionBtn('Edit', 'Edit the original prompt');
+      editBtn.addEventListener('click', function () {
+        var input = document.getElementById('master-input');
+        if (!input) return;
+        input.value = opts.userPrompt;
+        input.focus();
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+      bar.appendChild(editBtn);
+
+      var refreshBtn = actionBtn('↻ Refresh', 'Re-run this prompt');
+      refreshBtn.addEventListener('click', function () {
+        var input = document.getElementById('master-input');
+        var runBtn = document.getElementById('master-run');
+        if (!input || !runBtn) return;
+        input.value = opts.userPrompt;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        runBtn.click();
+      });
+      bar.appendChild(refreshBtn);
+    }
+
+    box.appendChild(bar);
+  }
+
+  function attach(box, text) {
+    attachMessageActions(box, { text: text });
+  }
+
+  global.OutputActions = {
+    attach: attach,
+    attachMessageActions: attachMessageActions,
+    attachMediaControls: attachMediaControls,
+    attachCodeControls: attachCodeControls,
+    enhanceCodeBlocks: enhanceCodeBlocks,
+    copyText: function (text) { return copyText(text, null); }
+  };
+})(window);

@@ -5,6 +5,7 @@
   var attachedFile = null;
   var EXECUTABLE = { image: 1, video: 1, music: 1, tts: 1, code: 1, html2image: 1, mcp: 1, browse: 1 };
   var MAX_ATTACH_BYTES = 4 * 1024 * 1024;
+  var assistantReplyCount = 0;
 
   function fileToAttachment(file) {
     return new Promise(function (resolve, reject) {
@@ -161,7 +162,6 @@
     }
   }
 
-  /** If user asked to remember something, append a short note to user_logs.md on Neon. */
   async function maybeAppendMemoryNote(userMessage) {
     var m = String(userMessage || '');
     if (!/\b(remember (this|that|to)|note that|save (this|that) (to|in) memory|add to (my )?memory|don'?t forget)\b/i.test(m)) return;
@@ -174,6 +174,26 @@
       var stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
       var note = '\n\n## Note (' + stamp + ')\n\n' + m.slice(0, 500) + '\n';
       await DocsClient.save('user_logs', String(existing || '') + note);
+    } catch (_) {}
+  }
+
+  async function maybeLogSessionDigest(userMessage, assistantText) {
+    assistantReplyCount += 1;
+    if (assistantReplyCount % 5 !== 0) return;
+    if (!window.DocsClient) return;
+    var prefs = (window.Settings && email()) ? Settings.load(email()) : {};
+    if (prefs.memoryEnabled === false) return;
+    try {
+      var res = await DocsClient.get('user_logs');
+      var existing = (res && res.ok && res.content) ? res.content : '';
+      var stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+      var u = String(userMessage || '').replace(/\s+/g, ' ').trim().slice(0, 180);
+      var a = String(assistantText || '').replace(/\s+/g, ' ').trim().slice(0, 280);
+      var block =
+        '\n\n## Session log (' + stamp + ') — reply #' + assistantReplyCount + '\n\n' +
+        '- User: ' + u + '\n' +
+        '- Assistant: ' + a + '\n';
+      await DocsClient.save('user_logs', String(existing || '') + block);
     } catch (_) {}
   }
 
@@ -209,6 +229,12 @@
         var ans = document.createElement('div');
         renderMarkdownInto(ans, m.content || '');
         b.appendChild(ans);
+        if (window.OutputActions) {
+          if (OutputActions.enhanceCodeBlocks) OutputActions.enhanceCodeBlocks(ans);
+          if (OutputActions.attachMessageActions) {
+            OutputActions.attachMessageActions(b, { text: m.content || '' });
+          }
+        }
       }
     });
     if (!(s.messages || []).length) {
@@ -334,6 +360,15 @@
         answer.className = 'text-slate-800 dark:text-slate-100';
         renderMarkdownInto(answer, data.result);
         assistantBox.appendChild(answer);
+        if (window.OutputActions) {
+          if (OutputActions.enhanceCodeBlocks) OutputActions.enhanceCodeBlocks(answer);
+          if (OutputActions.attachMessageActions) {
+            OutputActions.attachMessageActions(assistantBox, {
+              text: data.result,
+              userPrompt: message
+            });
+          }
+        }
       } else {
         var pre = document.createElement('pre');
         pre.className = 'whitespace-pre-wrap font-mono text-xs m-0';
@@ -355,6 +390,12 @@
           actions.appendChild(btn);
           assistantBox.appendChild(actions);
         }
+        if (window.OutputActions && OutputActions.attachMessageActions) {
+          OutputActions.attachMessageActions(assistantBox, {
+            text: preText(data),
+            userPrompt: message
+          });
+        }
       }
 
       if (data.fallback_note) {
@@ -373,6 +414,7 @@
         renderHistoryList();
       }
       maybeAppendMemoryNote(message);
+      maybeLogSessionDigest(message, data.result || preText(data));
       clearAttachment();
     } catch (err) {
       assistantBox.textContent = String(err && err.message ? err.message : err);

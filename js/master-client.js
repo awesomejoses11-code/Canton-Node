@@ -87,7 +87,7 @@
 
   function simpleMarkdownToHtml(src) {
     var s = String(src == null ? '' : src);
-    s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    s = s.replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>');
     s = s.replace(/```([\s\S]*?)```/g, function (_, code) {
       return '<pre><code>' + code.replace(/^\n+|\n+$/g, '') + '</code></pre>';
     });
@@ -159,6 +159,22 @@
     } catch (_) {
       return { enabled: true, reference: '', user_logs: '' };
     }
+  }
+
+  /** If user asked to remember something, append a short note to user_logs.md on Neon. */
+  async function maybeAppendMemoryNote(userMessage) {
+    var m = String(userMessage || '');
+    if (!/\b(remember (this|that|to)|note that|save (this|that) (to|in) memory|add to (my )?memory|don'?t forget)\b/i.test(m)) return;
+    if (!window.DocsClient) return;
+    var prefs = (window.Settings && email()) ? Settings.load(email()) : {};
+    if (prefs.memoryEnabled === false) return;
+    try {
+      var res = await DocsClient.get('user_logs');
+      var existing = (res && res.ok && res.content) ? res.content : '';
+      var stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+      var note = '\n\n## Note (' + stamp + ')\n\n' + m.slice(0, 500) + '\n';
+      await DocsClient.save('user_logs', String(existing || '') + note);
+    } catch (_) {}
   }
 
   function renderHistoryList() {
@@ -356,6 +372,7 @@
         });
         renderHistoryList();
       }
+      maybeAppendMemoryNote(message);
       clearAttachment();
     } catch (err) {
       assistantBox.textContent = String(err && err.message ? err.message : err);

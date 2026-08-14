@@ -2,7 +2,7 @@
  * api/master.js — Master Agent router (simplified)
  *
  * Priority: heuristic → Vinci → OpenRouter → HF
- * Chat/web: uses client-sent history[] (last 12 turns) for in-session memory.
+ * Chat/web: uses client-sent history[] + prefs { displayName, tone }
  * ========================================================================= */
 
 const VINCI_URL = 'https://vinci.getsimpledirect.com/api/v1/chat/completions';
@@ -203,6 +203,26 @@ const CAPABILITIES_TEXT =
   'I return a route card; for image/video/music press **Execute** (uses that tool quota).\n\n' +
   'I will not pretend I lack these tools. If something fails, use **Edit prompt** or **Regenerate**.';
 
+const TONE_MAP = {
+  friendly: 'warm, approachable, and encouraging',
+  professional: 'professional, clear, and businesslike',
+  concise: 'brief and to the point — minimize filler',
+  technical: 'precise and technical; prefer exact terms',
+  playful: 'light, witty, and informal without being unhelpful'
+};
+
+function buildPersonaPrompt(prefs) {
+  prefs = prefs || {};
+  const name = String(prefs.displayName || '').trim();
+  const toneKey = String(prefs.tone || 'friendly').toLowerCase();
+  const tone = TONE_MAP[toneKey] || TONE_MAP.friendly;
+  let s = 'Reply in a ' + tone + ' tone.';
+  if (name) {
+    s += ' The user prefers to be addressed as "' + name.replace(/["\\]/g, '') + '". Use their name naturally when greeting or when it fits; do not overuse it.';
+  }
+  return s;
+}
+
 module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method not allowed. Use POST.' });
@@ -218,9 +238,11 @@ module.exports = async function handler(req, res) {
 
   let message;
   let history = [];
+  let prefs = {};
   try {
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
     message = String(body.message || '').trim();
+    prefs = (body.prefs && typeof body.prefs === 'object') ? body.prefs : {};
     if (Array.isArray(body.history)) {
       history = body.history
         .filter(function (m) {
@@ -311,7 +333,7 @@ module.exports = async function handler(req, res) {
   }
 
   if (route.agent_id === 'chat' || route.agent_id === 'web') {
-    const gen = await tryGenerateAnswer(message, history);
+    const gen = await tryGenerateAnswer(message, history, prefs);
     res.status(200).json({
       agent_id: route.agent_id,
       endpoint: 'llm.generate',
@@ -339,7 +361,7 @@ module.exports = async function handler(req, res) {
   });
 };
 
-async function tryGenerateAnswer(message, history) {
+async function tryGenerateAnswer(message, history, prefs) {
   const attempts = [];
   const prior = Array.isArray(history) ? history : [];
   for (const provider of LLM_CHAIN) {
@@ -359,7 +381,8 @@ async function tryGenerateAnswer(message, history) {
             'If the user wants media, tell them to ask concretely (e.g. Generate an image of…). ' +
             'After routing, they may need to press Execute. ' +
             'Daily quotas: Master routing 80, image 12, video 4, music 8, TTS 50, code 50. ' +
-            'Use prior turns when relevant. Answer clearly.'
+            'Use prior turns when relevant. Answer clearly. ' +
+            buildPersonaPrompt(prefs)
           }
         ].concat(prior).concat([{ role: 'user', content: message }]);
         const resp = await fetch(provider.url, {

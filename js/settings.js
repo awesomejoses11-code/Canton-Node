@@ -87,8 +87,8 @@
   }
 
   const Settings = {
-    DEFAULTS,
-    TONES,
+    DEFAULTS: DEFAULTS,
+    TONES: TONES,
 
     displayNameFor: function (email, user) {
       var s = this.load(email);
@@ -112,7 +112,7 @@
     },
 
     /** Pull Neon settings into local cache (call after login). */
-    async syncFromServer: async function (email) {
+    syncFromServer: async function (email) {
       var remote = await pullFromServer();
       if (!remote) return this.load(email);
       var merged = Object.assign({}, DEFAULTS, remote);
@@ -130,7 +130,6 @@
     applyTheme: function (theme) {
       var root = document.documentElement;
       var darkQuery = global.matchMedia('(prefers-color-scheme: dark)');
-      var self = this;
       var resolve = function () {
         var dark = theme === 'dark' || (theme === 'system' && darkQuery.matches);
         root.classList.toggle('dark', dark);

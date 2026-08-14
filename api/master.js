@@ -55,12 +55,23 @@ const ENDPOINT_TO_AGENT = {
 const SHARED_CHAT_ENDPOINT_AGENTS = ['image2html', 'web', 'chat'];
 
 const SYSTEM_PROMPT =
-  'You route requests for a multi-tool hub. Reply with ONLY a JSON object:\n' +
+  'You are the Master Agent router for Canton Node, a multi-tool generative hub. ' +
+  'You do NOT answer the user yourself — you only choose which tool to run. ' +
+  'Reply with ONLY a JSON object (no markdown, no prose):\n' +
   '{"agent_id":"image|music|video|image2html|html2image|tts|code|web|chat",' +
   '"endpoint":"...","params":{...},"reasoning":"..."}\n' +
-  'Endpoints: image.genimage, image.txt2img, image.dalle, video.create, music.aimelody, ' +
-  'tts.default, chat.askgpt5, html2image.direct, code.compile.python, code.convert.python.\n' +
-  'Image → image.genimage + {prompt}. Video → video.create + {prompt}. Chat → chat.askgpt5.';
+  'Tools:\n' +
+  '- image → endpoint image.genimage, params {prompt}\n' +
+  '- video → endpoint video.create, params {prompt}\n' +
+  '- music → endpoint music.aimelody, params {prompt}\n' +
+  '- tts → endpoint tts.default, params {text}\n' +
+  '- code → endpoint code.compile.python, params {code}\n' +
+  '- chat → endpoint chat.askgpt5 (general questions)\n' +
+  '- web → endpoint chat.askgpt5 with web:true for current events\n' +
+  'If the user asks for an image, picture, logo, drawing → image.\n' +
+  'If they ask for a video, clip, animation → video.\n' +
+  'If they ask for a song or music → music.\n' +
+  'Never claim you lack tools; always pick the best agent_id.';
 
 function heuristicRoute(message) {
   const m = message.toLowerCase();
@@ -80,6 +91,8 @@ function heuristicRoute(message) {
     return { agent_id: 'code', endpoint: 'code.compile.python', params: { code: message }, reasoning: 'Heuristic: code' };
   if (/\b(search the web|look up|latest news|current events)\b/.test(m))
     return { agent_id: 'web', endpoint: 'chat.askgpt5', params: { prompt: message, web: true }, reasoning: 'Heuristic: web' };
+  if (/\b(what can you do|your (tools|capabilities|features)|list (your )?tools|use (the )?tools|tools? you have|who are you|what are you)\b/.test(m))
+    return { agent_id: 'chat', endpoint: 'chat.capabilities', params: { prompt: message }, reasoning: 'Heuristic: capabilities' };
   return null;
 }
 
@@ -175,6 +188,21 @@ function sanitizeParams(params) {
   return out;
 }
 
+const CAPABILITIES_TEXT =
+  'I am the **Canton Node Master Agent** — a router and orchestrator for this hub, not a text-only chatbot.\n\n' +
+  'When you ask for media or code, I **route** the request to the right tool. Available tools:\n\n' +
+  '| Tool | Example prompt | Daily quota |\n' +
+  '|------|----------------|-------------|\n' +
+  '| **Image** | Generate a sunset over mountains | 12/day |\n' +
+  '| **Video** | Make a short video of waves on a beach | 4/day |\n' +
+  '| **Music** | Compose a calm lo-fi beat | 8/day |\n' +
+  '| **TTS** | Speak this text: Hello world | 50/day |\n' +
+  '| **Code** | paste code and ask to compile/convert | 50/day |\n' +
+  '| **Chat / Q&A** | any general question | Master routing 80/day |\n\n' +
+  '**How to use a tool:** describe what you want (e.g. draw a neon city skyline). ' +
+  'I return a route card; for image/video/music press **Execute** (uses that tool quota).\n\n' +
+  'I will not pretend I lack these tools. If something fails, use **Edit prompt** or **Regenerate**.';
+
 module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method not allowed. Use POST.' });
@@ -266,6 +294,22 @@ module.exports = async function handler(req, res) {
     routedParams.prompt = message;
   }
 
+  if (route.endpoint === 'chat.capabilities') {
+    res.status(200).json({
+      agent_id: 'chat',
+      endpoint: 'chat.capabilities',
+      params: { prompt: message },
+      result: CAPABILITIES_TEXT,
+      source: 'master-capabilities',
+      server_executed: true,
+      reasoning: typeof route.reasoning === 'string' ? route.reasoning : 'Capabilities overview',
+      fallback_note: fallbackNote,
+      model_used: 'master-capabilities',
+      fallback_used: false
+    });
+    return;
+  }
+
   if (route.agent_id === 'chat' || route.agent_id === 'web') {
     const gen = await tryGenerateAnswer(message, history);
     res.status(200).json({
@@ -309,7 +353,13 @@ async function tryGenerateAnswer(message, history) {
         const messages = [
           {
             role: 'system',
-            content: 'You are the Canton Node Master Agent assistant. Use prior turns in this conversation when relevant. Answer clearly and concisely.'
+            content: 'You are the Canton Node Master Agent — orchestrator for a multi-tool generative hub. ' +
+            'You CAN route users to real tools: image, video, music, TTS, and code generation. ' +
+            'You are NOT a text-only chatbot. Never say you lack image, video, music, or media tools. ' +
+            'If the user wants media, tell them to ask concretely (e.g. Generate an image of…). ' +
+            'After routing, they may need to press Execute. ' +
+            'Daily quotas: Master routing 80, image 12, video 4, music 8, TTS 50, code 50. ' +
+            'Use prior turns when relevant. Answer clearly.'
           }
         ].concat(prior).concat([{ role: 'user', content: message }]);
         const resp = await fetch(provider.url, {

@@ -5,12 +5,14 @@
   let attachedFile = null;
 
   const HEAVY_FEATURES = new Set(['image', 'music', 'video']);
+  const EXECUTABLE_AGENTS = new Set(['image', 'video', 'music', 'tts', 'code', 'html2image']);
 
   const SOURCE_LABELS = {
     'openrouter':        (d) => 'OpenRouter — ' + (d.model_used || 'fallback model'),
     'openrouter-online': (d) => 'OpenRouter — with live web search (' + (d.model_used || 'fallback model') + ')',
     'vinci':             (d) => 'Vinci — ' + (d.model_used || 'forte'),
-    'llm':               (d) => (d.model_used || 'LLM')
+    'llm':               (d) => (d.model_used || 'LLM'),
+    'master-capabilities': () => 'Master Agent — tools & quotas'
   };
 
   function getPrexzyAPI() {
@@ -102,14 +104,6 @@
     show(box, text);
   }
 
-  function showMarkdown(box, text) {
-    box.classList.remove('whitespace-pre-wrap', 'hidden');
-    box.innerHTML = '';
-    const el = document.createElement('div');
-    renderMarkdown(el, text);
-    box.appendChild(el);
-  }
-
   function show(el, text) {
     el.classList.remove('hidden');
     el.textContent = text;
@@ -160,13 +154,13 @@
     const email = getEmail();
     const settings = Settings.load(email);
     if (settings.routingMode === 'manual') {
-      showPlain(appendAssistantBubble(), 'Routing mode is set to "Manual selection only" in Settings — use the Master Agent with Auto-route enabled.');
+      showPlain(appendAssistantBubble(), 'Routing mode is set to "Manual selection only" in Settings.');
       return;
     }
 
     const c = Quota.consume('master');
     if (!c.ok) {
-      showPlain(appendAssistantBubble(), 'Daily Master Agent routing limit reached (' + Quota.limit('master') + '/day). Resets at midnight.');
+      showPlain(appendAssistantBubble(), 'Daily Master Agent routing limit reached (' + Quota.limit('master') + '/day).');
       return;
     }
 
@@ -201,8 +195,6 @@
     const attachmentInfo = attachedFile ? { name: attachedFile.name, type: attachedFile.type } : null;
 
     try {
-      if (window.logEvent) window.logEvent('master_run', { prompt: message.slice(0, 100) });
-
       const res = await fetch('/api/master', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -241,7 +233,7 @@
           'reasoning: ' + data.reasoning +
           (data.fallback_note ? '\n\n⚠ ' + data.fallback_note : '');
         if (attachedFile) {
-          text += '\n\n📎 "' + attachedFile.name + '" attached, but no wired endpoint accepts image input yet — it won\'t be sent to Prexzy.';
+          text += '\n\n📎 Attachment noted but not sent to this endpoint yet.';
           clearAttachment();
         }
         assistantBox.classList.add('font-mono');
@@ -260,12 +252,12 @@
         persistAssistantMessage(email, routeMsg);
 
         const api = getPrexzyAPI();
-        if ((api && api.describe(data.endpoint)) || data.agent_id === 'video') {
+        if ((api && api.describe(data.endpoint)) || EXECUTABLE_AGENTS.has(data.agent_id)) {
           appendExecuteAction(assistantBox, routeMsg, email);
         } else if (!api) {
           const warn = document.createElement('div');
           warn.className = 'mt-2 text-[11px] text-amber-600 dark:text-amber-400 font-sans';
-          warn.textContent = '⚠ PrexzyAPI not loaded — Execute unavailable. Check js/api.js.';
+          warn.textContent = '⚠ PrexzyAPI not loaded — Execute unavailable.';
           assistantBox.appendChild(warn);
         }
         wireBubbleActions(assistantBox, message, text);
@@ -304,8 +296,7 @@
     const labelFn = SOURCE_LABELS[data.source];
     const metaEl = document.createElement('div');
     metaEl.className = 'mt-3 pt-2 border-t border-slate-200 dark:border-slate-700 text-[11px] text-slate-400 font-mono';
-    metaEl.textContent = 'via ' + (labelFn ? labelFn(data) : (data.source || 'router')) +
-      ' · chat/web quota isn\'t deducted for Master Agent answers';
+    metaEl.textContent = 'via ' + (labelFn ? labelFn(data) : (data.source || 'router'));
 
     box.append(answerEl, metaEl);
 
@@ -328,7 +319,7 @@
 
     const note = document.createElement('span');
     note.className = 'text-[11px] text-slate-400';
-    note.textContent = "runs the routed endpoint (consumes that agent's quota)";
+    note.textContent = 'runs the tool (uses that quota)';
 
     actions.append(btn, note);
     bubbleEl.appendChild(actions);
@@ -339,15 +330,16 @@
       if (!api) {
         const errBox = document.createElement('div');
         errBox.className = 'mt-2 text-rose-600 dark:text-rose-400 text-xs font-sans';
-        errBox.textContent = 'PrexzyAPI is not loaded. Check that js/api.js is served.';
+        errBox.textContent = 'PrexzyAPI is not loaded.';
         bubbleEl.appendChild(errBox);
         return;
       }
       const endpoint = api.describe(endpointKey);
       const isVideo = routeMsg.meta.agent_id === 'video' || (endpointKey && endpointKey.indexOf('video.') === 0);
+      const isImage = routeMsg.meta.agent_id === 'image' || (endpointKey && endpointKey.indexOf('image.') === 0);
 
       const settings = Settings.load(email);
-      const feature = isVideo ? 'video' : (endpoint && endpoint.feature);
+      const feature = isVideo ? 'video' : isImage ? 'image' : (endpoint && endpoint.feature);
       if (settings.confirmHeavy && feature && HEAVY_FEATURES.has(feature)) {
         const left = Quota.remaining(feature);
         if (!confirm('This will use 1 ' + feature + ' call (' + left + ' left today). Continue?')) return;
@@ -361,11 +353,10 @@
       try {
         let data;
         if (isVideo) {
-          data = await api.generateVideo(routeMsg.meta.params || {}, {
-            loadingEl: resultArea,
-            poll: true
-          });
+          data = await api.generateVideo(routeMsg.meta.params || {}, { loadingEl: resultArea, poll: true });
           if (data && data.url && !data.video_url) data.video_url = data.url;
+        } else if (isImage && api.generateImage) {
+          data = await api.generateImage(routeMsg.meta.params || {}, { loadingEl: resultArea });
         } else {
           showPlain(resultArea, 'Executing ' + endpointKey + '…');
           data = await api.callResilient(endpointKey, routeMsg.meta.params);
@@ -394,24 +385,13 @@
     return null;
   }
 
-  function scoreFromKey(key) {
-    const k = (key || '').toLowerCase();
-    let s = 0;
-    if (k === 'url' || k === 'image_url' || k === 'img_url') s += 3;
-    if (k.includes('hd') || k.includes('orig')) s += 2;
-    if (k.includes('thumb') || k.includes('preview')) s -= 1;
-    if (k.includes('path') || k.includes('name')) s += 1;
-    return s;
-  }
-
   function collectMediaUrls(obj, found, keyHint) {
     if (found === undefined) found = [];
     if (keyHint === undefined) keyHint = '';
     if (obj == null) return found;
     if (typeof obj === 'string') {
-      if (/^https?:\/\//i.test(obj) || /^data:/i.test(obj)) {
-        const type = detectType(obj, keyHint) || 'image';
-        found.push({ type: type, url: obj, key: keyHint || 'url', score: scoreFromKey(keyHint) });
+      if (/^https?:\/\//i.test(obj) || /^data:/i.test(obj) || /^blob:/i.test(obj)) {
+        found.push({ type: detectType(obj, keyHint) || 'image', url: obj, key: keyHint || 'url', score: 1 });
       }
       return found;
     }
@@ -420,55 +400,28 @@
       return found;
     }
     if (typeof obj === 'object') {
-      var preferredKeys = ['url', 'image_url', 'img_url', 'video_url', 'audio_url', 'path', 'src', 'file', 'name'];
-      for (var i = 0; i < preferredKeys.length; i++) {
-        var pk = preferredKeys[i];
-        if (typeof obj[pk] === 'string' && (/^https?:\/\//i.test(obj[pk]) || /^data:/i.test(obj[pk]))) {
-          var t = detectType(obj[pk], keyHint || pk) || detectType(obj[pk], pk) || 'image';
-          found.push({ type: t, url: obj[pk], key: keyHint || pk, score: scoreFromKey(keyHint || pk) + 2 });
-        }
-      }
-      Object.keys(obj).forEach(function (k) {
-        collectMediaUrls(obj[k], found, k);
+      ['url', 'image_url', 'img_url', 'video_url', 'audio_url', 'path', 'src'].forEach(function (pk) {
+        if (typeof obj[pk] === 'string') collectMediaUrls(obj[pk], found, pk);
       });
+      Object.keys(obj).forEach(function (k) { collectMediaUrls(obj[k], found, k); });
     }
     return found;
   }
 
   function findMediaUrl(data) {
     if (!data || typeof data !== 'object') return null;
-    var flat = ['image_url', 'img_url', 'imageUrl', 'photo_url', 'video_url', 'videoUrl', 'audio_url', 'audioUrl', 'url'];
-    for (var i = 0; i < flat.length; i++) {
-      var v = data[flat[i]];
-      if (typeof v === 'string' && (/^https?:\/\//i.test(v) || /^data:/i.test(v))) {
-        var kind = /video/i.test(flat[i]) ? 'video' : /audio/i.test(flat[i]) ? 'audio' : 'image';
-        return { kind: kind, url: v };
-      }
-    }
     var items = collectMediaUrls(data);
     if (!items.length) return null;
     items.sort(function (a, b) {
       var order = { image: 0, video: 1, audio: 2 };
-      var da = order[a.type] != null ? order[a.type] : 9;
-      var db = order[b.type] != null ? order[b.type] : 9;
-      if (da !== db) return da - db;
-      return b.score - a.score;
+      return (order[a.type] || 9) - (order[b.type] || 9);
     });
-    var best = items[0];
-    return { kind: best.type, url: best.url };
+    return { kind: items[0].type, url: items[0].url };
   }
 
   function summarize(data, media) {
-    if (data.prompt) {
-      return media
-        ? 'Generated ' + media.kind + ' for: "' + data.prompt + '"'
-        : 'Done — prompt: "' + data.prompt + '"';
-    }
     if (data.source && media) return 'Generated ' + media.kind + ' via ' + data.source + '.';
-    if (data.note && media) return 'Generated ' + media.kind + '. ' + data.note;
-    if (data.result || data.response || data.answer || data.message) {
-      return String(data.result || data.response || data.answer || data.message);
-    }
+    if (data.prompt && media) return 'Generated ' + media.kind + ' for: "' + data.prompt + '"';
     return media ? 'Generated ' + media.kind + '.' : 'Request completed.';
   }
 
@@ -487,13 +440,13 @@
         renderMedia(box, media, summarize(data, media));
         return;
       }
-      if (data._text) { showMarkdown(box, data._text); return; }
+      if (data._text) { showPlain(box, data._text); return; }
       if (data.result || data.response || data.answer || data.message) {
-        showMarkdown(box, summarize(data, null));
+        showPlain(box, String(data.result || data.response || data.answer || data.message));
         return;
       }
     }
-    showPlain(box, 'Unrecognized response shape — raw output:\n' + JSON.stringify(data, null, 2));
+    showPlain(box, 'Raw output:\n' + JSON.stringify(data, null, 2));
   }
 
   function renderMedia(box, media, caption) {
@@ -509,15 +462,6 @@
     box.append(captionEl, el);
     if (window.OutputActions && window.OutputActions.attachMediaControls) {
       window.OutputActions.attachMediaControls(box, el, media.url, media.kind, 'canton-node-' + media.kind);
-    } else {
-      var link = document.createElement('a');
-      link.href = media.url;
-      link.target = '_blank';
-      link.rel = 'noopener';
-      link.download = 'canton-node-result';
-      link.className = 'block mt-2 text-brand-600 dark:text-brand-500 underline text-xs';
-      link.textContent = '⬇ Download';
-      box.appendChild(link);
     }
   }
 
@@ -580,16 +524,11 @@
         if (s.mediaKind !== 'image') el.controls = true;
         el.className = 'max-w-full rounded-lg mt-2';
         resultArea.appendChild(el);
-      } else if (s.ephemeralMedia) {
-        var note = document.createElement('div');
-        note.className = 'text-[11px] text-slate-400 mt-1';
-        note.textContent = 'Media was generated this session and is no longer viewable after reload.';
-        resultArea.appendChild(note);
       }
       box.appendChild(resultArea);
     } else {
       const api = getPrexzyAPI();
-      if ((api && api.describe(message.meta.endpoint)) || message.meta.agent_id === 'video') {
+      if ((api && api.describe(message.meta.endpoint)) || EXECUTABLE_AGENTS.has(message.meta.agent_id)) {
         appendExecuteAction(box, message, email);
       }
     }
@@ -601,7 +540,6 @@
     var list = document.getElementById('history-list');
     if (!list) return;
     list.innerHTML = '';
-
     var sessions = email ? History.load(email) : [];
     if (!sessions.length) {
       var p = document.createElement('p');
@@ -610,32 +548,26 @@
       list.appendChild(p);
       return;
     }
-
     sessions.forEach(function (session) {
       var isActive = session.id === currentSessionId;
       var item = document.createElement('div');
       item.className = 'group flex items-center gap-1 rounded-lg px-2 py-2 cursor-pointer text-xs ' +
-        (isActive
-          ? 'bg-brand-50 dark:bg-slate-700 text-brand-700 dark:text-slate-100 font-medium'
-          : 'hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300');
-
+        (isActive ? 'bg-brand-50 dark:bg-slate-700 text-brand-700 dark:text-slate-100 font-medium'
+                  : 'hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300');
       var titleEl = document.createElement('span');
       titleEl.className = 'flex-1 truncate';
       titleEl.textContent = session.title || 'New chat';
-
       var delBtn = document.createElement('button');
       delBtn.type = 'button';
       delBtn.className = 'opacity-0 group-hover:opacity-100 text-slate-400 hover:text-rose-500 px-1';
       delBtn.textContent = '✕';
-      delBtn.setAttribute('aria-label', 'Delete chat');
       delBtn.addEventListener('click', function (e) {
         e.stopPropagation();
-        if (!confirm('Delete this chat? This can\'t be undone.')) return;
+        if (!confirm('Delete this chat?')) return;
         History.delete(email, session.id);
         if (session.id === currentSessionId) startNewChat();
         else renderHistoryList(email);
       });
-
       item.addEventListener('click', function () { loadSession(email, session.id); });
       item.append(titleEl, delBtn);
       list.appendChild(item);
@@ -680,52 +612,39 @@
   }
 
   document.addEventListener('DOMContentLoaded', function () {
-    var textarea    = document.getElementById('master-input');
-    var attachBtn    = document.getElementById('master-attach');
-    var fileInput     = document.getElementById('master-file-input');
-    var attachChip   = document.getElementById('master-attachment');
-    var attachName   = document.getElementById('master-attachment-name');
-    var removeBtn     = document.getElementById('master-attachment-remove');
-
+    var textarea = document.getElementById('master-input');
     document.getElementById('master-run').addEventListener('click', runMasterAgent);
     textarea.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        runMasterAgent();
-      }
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runMasterAgent(); }
     });
     textarea.addEventListener('input', function () { autoGrow(textarea); });
 
-    attachBtn.addEventListener('click', function () { fileInput.click(); });
-    fileInput.addEventListener('change', function () {
-      var file = fileInput.files[0];
+    document.getElementById('master-attach').addEventListener('click', function () {
+      document.getElementById('master-file-input').click();
+    });
+    document.getElementById('master-file-input').addEventListener('change', function () {
+      var file = this.files[0];
       if (!file) return;
       attachedFile = file;
-      attachName.textContent = file.name;
-      attachChip.classList.remove('hidden');
+      document.getElementById('master-attachment-name').textContent = file.name;
+      document.getElementById('master-attachment').classList.remove('hidden');
     });
-    removeBtn.addEventListener('click', clearAttachment);
+    document.getElementById('master-attachment-remove').addEventListener('click', clearAttachment);
 
-    var toggleBtn  = document.getElementById('btn-history-toggle');
-    var closeBtn   = document.getElementById('history-close');
-    var backdrop   = document.getElementById('history-backdrop');
-    var newChatBtn = document.getElementById('history-new-chat');
-
-    if (toggleBtn) {
-      toggleBtn.addEventListener('click', function () {
-        var drawer = document.getElementById('history-drawer');
-        if (drawer.classList.contains('-translate-x-full')) openDrawer();
-        else closeDrawer();
-      });
-    }
+    var toggleBtn = document.getElementById('btn-history-toggle');
+    if (toggleBtn) toggleBtn.addEventListener('click', function () {
+      var drawer = document.getElementById('history-drawer');
+      if (drawer.classList.contains('-translate-x-full')) openDrawer();
+      else closeDrawer();
+    });
+    var closeBtn = document.getElementById('history-close');
     if (closeBtn) closeBtn.addEventListener('click', closeDrawer);
+    var backdrop = document.getElementById('history-backdrop');
     if (backdrop) backdrop.addEventListener('click', closeDrawer);
+    var newChatBtn = document.getElementById('history-new-chat');
     if (newChatBtn) newChatBtn.addEventListener('click', function () { startNewChat(); closeDrawer(); });
 
-    window.MasterChat = {
-      reset: startNewChat,
-      closeDrawer: closeDrawer
-    };
+    window.MasterChat = { reset: startNewChat, closeDrawer: closeDrawer };
   });
 
 })();

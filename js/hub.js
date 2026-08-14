@@ -64,7 +64,7 @@
 })();
 
 
-/* ---- Image generation (HF → Prexzy) + Execute path wiring ---- */
+/* ---- Media generation wiring (image HF→Prexzy, video Pixazo→Pyramid→Prexzy) ---- */
 (function (global) {
   'use strict';
   function wire() {
@@ -113,13 +113,19 @@
       };
     }
 
-    // Route image.* Execute calls through generateImage
-    if (global.PrexzyAPI.callResilient && !global.PrexzyAPI._imageWire) {
-      global.PrexzyAPI._imageWire = true;
+    // Route image.* / video.* through the server-side fallback chains
+    // (image: HF FLUX → Prexzy; video: Pixazo → Pyramid → Prexzy)
+    // so specialist skills and Execute buttons never hit Prexzy first.
+    if (global.PrexzyAPI.callResilient && !global.PrexzyAPI._mediaWire) {
+      global.PrexzyAPI._mediaWire = true;
       var orig = global.PrexzyAPI.callResilient.bind(global.PrexzyAPI);
       global.PrexzyAPI.callResilient = async function (key, params, opts) {
-        if (key && String(key).indexOf('image.') === 0) {
+        var k = key ? String(key) : '';
+        if (k.indexOf('image.') === 0 && global.PrexzyAPI.generateImage) {
           return global.PrexzyAPI.generateImage(params || {}, opts || {});
+        }
+        if (k.indexOf('video.') === 0 && global.PrexzyAPI.generateVideo) {
+          return global.PrexzyAPI.generateVideo(params || {}, opts || {});
         }
         return orig(key, params, opts);
       };
@@ -131,3 +137,21 @@
     wire();
   }
 })(window);
+
+/* Inject favicon + Open Graph tags if missing */
+(function () {
+  if (document.querySelector('link[rel="icon"]')) return;
+  var head = document.head;
+  function add(tag, attrs) {
+    var el = document.createElement(tag);
+    Object.keys(attrs).forEach(function (k) { el.setAttribute(k, attrs[k]); });
+    head.appendChild(el);
+  }
+  add('link', { rel: 'icon', href: '/favicon.svg', type: 'image/svg+xml' });
+  add('link', { rel: 'apple-touch-icon', href: '/favicon.svg' });
+  add('meta', { property: 'og:title', content: 'Canton Node' });
+  add('meta', { property: 'og:description', content: 'Private multi-tool generative hub' });
+  add('meta', { property: 'og:image', content: 'https://canton-node.vercel.app/og-image.png' });
+  add('meta', { name: 'twitter:card', content: 'summary_large_image' });
+  add('meta', { name: 'twitter:image', content: 'https://canton-node.vercel.app/og-image.png' });
+})();

@@ -1,8 +1,8 @@
 ---
 name: image-generator
 title: Image Generation Agent
-description: Generate high-quality images from text prompts using Prexzy AI art endpoints.
-version: 1.0.0
+description: Generate high-quality images from text prompts using Hugging Face FLUX primary and Prexzy backup.
+version: 1.1.0
 feature: image
 endpoints:
   - image.genimage
@@ -28,18 +28,18 @@ You create images from natural language descriptions.
 - The user asks to generate, draw, create, or make an image / picture / illustration / artwork.
 - The request contains visual descriptions (e.g. “a cyberpunk city at night”, “portrait of a fox in watercolor”).
 
-## Preferred endpoint order
-1. `image.genimage` — best overall quality
-2. `image.txt2img`
-3. `image.dalle`
-4. `image.aiwriter` — fallback
+## Fallback chain (server `/api/image`)
+1. **Hugging Face FLUX.1-schnell** (primary)
+2. **Prexzy** endpoints (genimage → txt2img → dalle → aiwriter) — backup
+
+Prefer `PrexzyAPI.generateImage({ prompt, size }, { loadingEl })` from the client.
+That helper routes through `/api/image`, consumes the `image` quota once, and returns `{ url, source }`.
 
 ## Parameters
 | Name    | Required | Description                                      | Example                  |
 |---------|----------|--------------------------------------------------|--------------------------|
 | prompt  | yes      | Full detailed description of the desired image   | "a red fox in a snowy forest, cinematic lighting" |
 | size    | no       | Output size                                      | "1024x1024", "1024x1792", "1792x1024" |
-| steps   | no       | Diffusion steps (if supported)                   | 30                       |
 
 ## Instructions for the agent
 - Always pass the complete user description as the `prompt`.
@@ -49,4 +49,4 @@ You create images from natural language descriptions.
 
 ## Example
 User: “Make a cinematic image of a lone samurai standing under cherry blossoms at dusk”
-→ Call `image.genimage` with prompt = the full sentence above.
+→ Call `PrexzyAPI.generateImage` with prompt = the full sentence above.

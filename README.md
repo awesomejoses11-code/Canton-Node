@@ -19,7 +19,7 @@ The Master Agent routes natural-language requests (chat, image, video, code, TTS
 ├── skills.json             # Skill index → skills/*/SKILL.md
 ├── mcp-config.json         # MCP servers (optional)
 ├── api/
-│   ├── master.js           # Router: OpenRouter free models → HF Qwen/Llama backup
+│   ├── master.js           # Router: heuristic → Vinci → OpenRouter → HF
 │   ├── image.js            # Image: HF FLUX.1-schnell → Prexzy
 │   ├── video.js            # Video: Pixazo LTX → Pyramid Flow → Prexzy
 │   ├── video-status.js     # Pixazo task_id polling (key stays server-side)
@@ -49,7 +49,7 @@ The Master Agent routes natural-language requests (chat, image, video, code, TTS
 
 | Feature | Primary | Backups |
 |---------|---------|---------|
-| **Routing** (Master) | OpenRouter free-model chain | HF Qwen2.5-7B → Llama-3.1-8B |
+| **Routing** (Master) | Heuristic keywords, then **Vinci** (Forte/Mezzo) | OpenRouter free models → HF Qwen/Llama |
 | **Image** | Hugging Face **FLUX.1-schnell** | Prexzy (genimage → txt2img → dalle → aiwriter) |
 | **Video** | **Pixazo LTX** (async + poll) | Pyramid Flow (HF) → Prexzy |
 
@@ -89,11 +89,21 @@ Failed requests refund the consumed unit.
 
 | Variable | Required | Used for |
 |----------|----------|----------|
-| `HF_TOKEN` | Strongly recommended | Image (FLUX), video (Pyramid), Master routing backup |
-| `PIXAZO_API_KEY` | For video | Pixazo LTX primary path |
-| `OPENROUTER_API_KEY` | Optional | Master free-model router (may work without on some setups) |
+| **`VINCI_API_KEY`** | **Recommended (primary router)** | Master Agent routing + chat (Vinci Forte/Mezzo, OpenAI-compatible) |
+| `OPENROUTER_API_KEY` | Backup router | Free models when Vinci is unset or fails |
+| `HF_TOKEN` | Image + backup router | FLUX images, Pyramid video, HF chat fallback |
+| `PIXAZO_API_KEY` | Video | Pixazo LTX primary path |
+| `MUAPI_API_KEY` | Optional later | Paid multi-model image/video (MuAPI) — not wired yet |
+
+**Master routing order:** heuristic keywords → **Vinci** → OpenRouter free → Hugging Face.
 
 No Prexzy API key is required for the public endpoints used here.
+
+### Vinci setup
+
+1. Issue a key at [platform.getsimpledirect.com](https://platform.getsimpledirect.com) (`vinci_live_…`).
+2. In Vercel → Project → Settings → Environment Variables, add `VINCI_API_KEY`.
+3. Redeploy. Docs: [developers.getsimpledirect.com/getting-started](https://developers.getsimpledirect.com/getting-started).
 
 ---
 

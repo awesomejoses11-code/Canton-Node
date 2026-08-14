@@ -4,7 +4,6 @@
   var currentSessionId = null;
   var attachedFile = null;
   var EXECUTABLE = { image: 1, video: 1, music: 1, tts: 1, code: 1, html2image: 1, mcp: 1, browse: 1 };
-
   var MAX_ATTACH_BYTES = 4 * 1024 * 1024;
 
   function fileToAttachment(file) {
@@ -20,22 +19,17 @@
       if (isText) {
         reader.onload = function () {
           resolve({
-            name: file.name,
-            type: file.type || 'text/plain',
-            kind: 'text',
+            name: file.name, type: file.type || 'text/plain', kind: 'text',
             text: String(reader.result || '').slice(0, 120000)
           });
         };
         reader.readAsText(file);
       } else {
         reader.onload = function () {
-          var dataUrl = String(reader.result || '');
           resolve({
-            name: file.name,
-            type: file.type || 'application/octet-stream',
+            name: file.name, type: file.type || 'application/octet-stream',
             kind: file.type.indexOf('image/') === 0 ? 'image' : 'binary',
-            dataUrl: dataUrl,
-            size: file.size
+            dataUrl: String(reader.result || ''), size: file.size
           });
         };
         reader.readAsDataURL(file);
@@ -47,7 +41,6 @@
     var u = window.Auth && Auth.current && Auth.current();
     return u ? u.email : null;
   }
-
   function el(id) { return document.getElementById(id); }
 
   function clearAttachment() {
@@ -92,6 +85,44 @@
     return b;
   }
 
+  function renderMarkdownInto(el, text) {
+    var raw = String(text == null ? '' : text);
+    raw = raw.replace(/^#{6,}\s*$/gm, '');
+    var html = null;
+    try {
+      if (window.marked && typeof marked.parse === 'function') html = marked.parse(raw, { breaks: true });
+      else if (window.marked && typeof marked === 'function') html = marked(raw);
+    } catch (_) { html = null; }
+    if (html && window.DOMPurify) {
+      el.classList.add('markdown-body');
+      el.innerHTML = DOMPurify.sanitize(html);
+    } else if (html) {
+      el.classList.add('markdown-body');
+      el.innerHTML = html;
+    } else {
+      el.classList.remove('markdown-body');
+      el.textContent = raw;
+    }
+  }
+
+  async function loadMemoryForRequest() {
+    var em = email();
+    var prefs = (window.Settings && em) ? Settings.load(em) : {};
+    if (!prefs.memoryEnabled) return null;
+    if (!window.DocsClient) return { enabled: true, reference: '', user_logs: '' };
+    try {
+      var res = await DocsClient.list();
+      if (!res || !res.ok || !res.docs) return { enabled: true, reference: '', user_logs: '' };
+      return {
+        enabled: true,
+        reference: String(res.docs.reference || '').slice(0, 6000),
+        user_logs: String(res.docs.user_logs || '').slice(0, 6000)
+      };
+    } catch (_) {
+      return { enabled: true, reference: '', user_logs: '' };
+    }
+  }
+
   function renderHistoryList() {
     var list = el('history-list');
     if (!list || !window.History) return;
@@ -121,10 +152,9 @@
       else {
         var b = appendAssistant();
         b.textContent = '';
-        var pre = document.createElement('pre');
-        pre.className = 'whitespace-pre-wrap font-mono text-xs m-0';
-        pre.textContent = m.content || '';
-        b.appendChild(pre);
+        var ans = document.createElement('div');
+        renderMarkdownInto(ans, m.content || '');
+        b.appendChild(ans);
       }
     });
     if (!(s.messages || []).length) {
@@ -217,10 +247,12 @@
       return;
     }
 
+    var memory = await loadMemoryForRequest();
     var body = {
       message: message,
       history: buildHistoryPayload(),
       prefs: prefs || {},
+      memory: memory,
       mcp_tools: mcpTools,
       attachment: attachment
     };
@@ -245,8 +277,8 @@
 
       if (data.server_executed && data.result) {
         var answer = document.createElement('div');
-        answer.className = 'whitespace-pre-wrap text-slate-800 dark:text-slate-100';
-        answer.textContent = String(data.result);
+        answer.className = 'text-slate-800 dark:text-slate-100';
+        renderMarkdownInto(answer, data.result);
         assistantBox.appendChild(answer);
       } else {
         var pre = document.createElement('pre');
@@ -265,9 +297,7 @@
           btn.type = 'button';
           btn.className = 'text-xs rounded-lg bg-violet-600 text-white px-3 py-1.5 font-medium';
           btn.textContent = data.agent_id === 'mcp' ? 'Execute MCP' : 'Execute';
-          btn.addEventListener('click', function () {
-            executeRoute(data, assistantBox, btn);
-          });
+          btn.addEventListener('click', function () { executeRoute(data, assistantBox, btn); });
           actions.appendChild(btn);
           assistantBox.appendChild(actions);
         }
@@ -305,7 +335,7 @@
     try {
       if (data.agent_id === 'mcp' && window.MCPClient) {
         var servers = MCPClient.listServers(email());
-        var sid = data.mcp_server_id || (data.params && data.params.tool);
+        var sid = data.mcp_server_id || (data.params && data.params.serverId);
         var tool = data.mcp_tool || (data.params && data.params.tool);
         var server = servers.find(function (s) { return s.id === sid; });
         if (!server) throw new Error('MCP server not found');
@@ -313,14 +343,19 @@
         delete args.serverId; delete args.tool; delete args.name;
         var out = await MCPClient.callTool(server, tool, args);
         var area = document.createElement('div');
-        area.className = 'mt-2 whitespace-pre-wrap text-sm';
-        area.textContent = (out && out.result != null) ? String(out.result) : JSON.stringify(out, null, 2);
+        area.className = 'mt-2 text-sm';
+        var raw = (out && out.result != null) ? out.result : out;
+        if (window.MCPFormat && MCPFormat.formatMcpResult) {
+          renderMarkdownInto(area, MCPFormat.formatMcpResult(raw));
+        } else {
+          area.textContent = typeof raw === 'string' ? raw : JSON.stringify(raw, null, 2);
+        }
         box.appendChild(area);
       } else if (window.PrexzyAPI) {
         var r = await PrexzyAPI.runRoute(data);
         var a = document.createElement('div');
-        a.className = 'mt-2 whitespace-pre-wrap text-sm';
-        a.textContent = typeof r === 'string' ? r : JSON.stringify(r, null, 2);
+        a.className = 'mt-2 text-sm';
+        renderMarkdownInto(a, typeof r === 'string' ? r : JSON.stringify(r, null, 2));
         box.appendChild(a);
       } else {
         throw new Error('No executor for ' + data.agent_id);
@@ -374,14 +409,8 @@
     renderHistoryList();
   }
 
-  function startNewChatPublic() { startNewChat(); }
-  function closeDrawerPublic() { closeDrawer(); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wire);
+  else wire();
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', wire);
-  } else {
-    wire();
-  }
-
-  window.MasterChat = { reset: startNewChatPublic, closeDrawer: closeDrawerPublic };
+  window.MasterChat = { reset: startNewChat, closeDrawer: closeDrawer };
 })();

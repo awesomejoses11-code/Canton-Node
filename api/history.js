@@ -2,7 +2,7 @@
  * api/history.js — Cross-device chat history on Neon
  * POST { token, action: "load"|"save", sessions? }
  * ========================================================================= */
-var db = require('./db');
+var db = require('../lib/db');
 
 async function resolveEmail(token) {
   if (!token) return null;

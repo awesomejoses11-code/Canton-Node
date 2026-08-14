@@ -87,7 +87,7 @@
 
   function simpleMarkdownToHtml(src) {
     var s = String(src == null ? '' : src);
-    s = s.replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>');
+    s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     s = s.replace(/```([\s\S]*?)```/g, function (_, code) {
       return '<pre><code>' + code.replace(/^\n+|\n+$/g, '') + '</code></pre>';
     });
@@ -213,7 +213,7 @@
     var d = el('history-drawer');
     var b = el('history-backdrop');
     if (d) d.classList.remove('-translate-x-full');
-    if (b) b.classList.remove('hidden');
+    if (b) b.classList.add('hidden');
     renderHistoryList();
   }
   function closeDrawer() {
@@ -445,6 +445,10 @@
     if (neu) neu.addEventListener('click', function () { startNewChat(); closeDrawer(); });
 
     renderHistoryList();
+    var em0 = email();
+    if (em0 && window.History && History.syncFromServer) {
+      History.syncFromServer(em0).then(function () { renderHistoryList(); }).catch(function () {});
+    }
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wire);

@@ -1,12 +1,8 @@
 /* =========================================================================
  * api/docs.js — Per-user markdown memory docs on Neon
- *
- * GET  /api/docs?token=...&key=reference|user_logs
- * POST /api/docs  { token, key, content }
- * POST /api/docs  { token, action: "list" }
  * ========================================================================= */
 
-var db = require('./db');
+var db = require('../lib/db');
 
 var ALLOWED_KEYS = { reference: true, user_logs: true };
 
@@ -36,10 +32,7 @@ async function resolveEmail(token) {
   var sql = db.getSql();
   if (!sql) return null;
   var rows = await sql`
-    SELECT s.email, s.expires_at
-    FROM sessions s
-    WHERE s.token = ${token}
-    LIMIT 1
+    SELECT s.email, s.expires_at FROM sessions s WHERE s.token = ${token} LIMIT 1
   `;
   if (!rows || !rows.length) return null;
   if (new Date(rows[0].expires_at).getTime() < Date.now()) {
@@ -60,26 +53,17 @@ function extractToken(req, body) {
 
 module.exports = async function handler(req, res) {
   try {
-    if (req.method === 'OPTIONS') {
-      res.status(204).end();
-      return;
-    }
+    if (req.method === 'OPTIONS') { res.status(204).end(); return; }
     if (!db.hasDatabase()) {
-      res.status(503).json({
-        ok: false,
-        error: 'DATABASE_URL not configured. Connect Neon and redeploy.',
-        code: 'no_db'
-      });
+      res.status(503).json({ ok: false, error: 'DATABASE_URL not configured. Connect Neon and redeploy.', code: 'no_db' });
       return;
     }
-
     await db.ensureSchema();
     var sql = db.getSql();
     var body = {};
     if (req.method === 'POST' || req.method === 'PUT') {
       body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
     }
-
     var token = extractToken(req, body);
     var email = await resolveEmail(token);
     if (!email) {
@@ -88,29 +72,18 @@ module.exports = async function handler(req, res) {
     }
 
     if (req.method === 'GET' && (req.query && req.query.action === 'list')) {
-      var all = await sql`
-        SELECT doc_key, content, updated_at FROM user_docs WHERE email = ${email}
-      `;
+      var all = await sql`SELECT doc_key, content, updated_at FROM user_docs WHERE email = ${email}`;
       var map = { reference: DEFAULTS.reference, user_logs: DEFAULTS.user_logs };
       var updated = {};
-      (all || []).forEach(function (row) {
-        map[row.doc_key] = row.content;
-        updated[row.doc_key] = row.updated_at;
-      });
+      (all || []).forEach(function (row) { map[row.doc_key] = row.content; updated[row.doc_key] = row.updated_at; });
       res.status(200).json({ ok: true, docs: map, updated_at: updated });
       return;
     }
-
     if (req.method === 'POST' && body.action === 'list') {
-      var all2 = await sql`
-        SELECT doc_key, content, updated_at FROM user_docs WHERE email = ${email}
-      `;
+      var all2 = await sql`SELECT doc_key, content, updated_at FROM user_docs WHERE email = ${email}`;
       var map2 = { reference: DEFAULTS.reference, user_logs: DEFAULTS.user_logs };
       var updated2 = {};
-      (all2 || []).forEach(function (row) {
-        map2[row.doc_key] = row.content;
-        updated2[row.doc_key] = row.updated_at;
-      });
+      (all2 || []).forEach(function (row) { map2[row.doc_key] = row.content; updated2[row.doc_key] = row.updated_at; });
       res.status(200).json({ ok: true, docs: map2, updated_at: updated2 });
       return;
     }
@@ -120,18 +93,13 @@ module.exports = async function handler(req, res) {
       res.status(400).json({ ok: false, error: 'key must be "reference" or "user_logs".' });
       return;
     }
-
     if (req.method === 'GET') {
-      var rows = await sql`
-        SELECT content, updated_at FROM user_docs
-        WHERE email = ${email} AND doc_key = ${key} LIMIT 1
-      `;
+      var rows = await sql`SELECT content, updated_at FROM user_docs WHERE email = ${email} AND doc_key = ${key} LIMIT 1`;
       var content = (rows && rows[0] && rows[0].content) || DEFAULTS[key];
       var updatedAt = (rows && rows[0] && rows[0].updated_at) || null;
       res.status(200).json({ ok: true, key: key, content: content, updated_at: updatedAt });
       return;
     }
-
     if (req.method === 'POST' || req.method === 'PUT') {
       var contentIn = body.content;
       if (typeof contentIn !== 'string') {
@@ -151,14 +119,10 @@ module.exports = async function handler(req, res) {
       res.status(200).json({ ok: true, key: key, saved: true });
       return;
     }
-
     res.status(405).json({ ok: false, error: 'Method not allowed' });
   } catch (err) {
     console.error('[docs]', err);
-    res.status(500).json({
-      ok: false,
-      error: String(err && err.message ? err.message : err).slice(0, 300)
-    });
+    res.status(500).json({ ok: false, error: String(err && err.message ? err.message : err).slice(0, 300) });
   }
 };
 

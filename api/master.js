@@ -83,7 +83,6 @@ function heuristicRoute(message, mcpTools) {
   return null;
 }
 
-/** Free DuckDuckGo HTML fallback (no key). Returns markdown snippet or ''. */
 async function duckDuckGoSearch(query) {
   try {
     var q = encodeURIComponent(String(query || '').slice(0, 200));
@@ -105,14 +104,12 @@ async function duckDuckGoSearch(query) {
     while ((m = re.exec(html)) && results.length < 5) {
       var href = m[1];
       var title = m[2].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
-      // DDG wraps redirects — extract uddg=
       var uddg = href.match(/[?&]uddg=([^&]+)/);
       if (uddg) {
         try { href = decodeURIComponent(uddg[1]); } catch (_) {}
       }
       results.push({ title: title, url: href });
     }
-    // second pass for snippets in order
     var snippets = [];
     while ((m = snipRe.exec(html)) && snippets.length < 5) {
       snippets.push(String(m[1] || m[2] || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim());
@@ -146,7 +143,8 @@ function buildChatSystemPrompt(prefs, memory, webMode) {
     'If web search results are included in the user message, ground your answer in them and cite links in Markdown.',
     'Always answer in clean standard Markdown (headings, short paragraphs, bullets when helpful).',
     'Do not dump internal hashes, request IDs, or raw JSON unless the user asks.',
-    'If the user asks you to remember something lasting, acknowledge it and restate what you will keep in memory.'
+    'If the user asks you to remember something lasting, acknowledge it and restate what you will keep in memory.',
+    'Finish complete answers — do not stop mid-sentence or mid-list.'
   ];
   if (webMode) {
     lines.push('This turn requires up-to-date information. Use the provided search results; do not invent URLs or prices.');
@@ -176,7 +174,6 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
   var searchNote = '';
 
   if (webMode) {
-    // 1) Prefer OpenRouter with web plugin (works even on free models; may cost small search fee)
     var orKey = process.env.OPENROUTER_API_KEY;
     if (orKey) {
       var orModels = [
@@ -190,7 +187,7 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
             messages: [
               { role: 'system', content: buildChatSystemPrompt(prefs || {}, memory || null, true) }
             ].concat(prior).concat([{ role: 'user', content: message }]),
-            max_tokens: 1200,
+            max_tokens: 2500,
             plugins: [{ id: 'web', max_results: 5 }]
           };
           var orResp = await fetch(OPENROUTER_URL, {
@@ -224,7 +221,6 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
       attempts.push({ endpoint: 'openrouter+web', error: 'key missing' });
     }
 
-    // 2) DuckDuckGo fallback → inject into prompt, answer with Vinci→OR→HF chain
     searchNote = await duckDuckGoSearch(message);
     if (searchNote) {
       userContent =
@@ -246,8 +242,7 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
       var m = provider.models[mi];
       try {
         var messages = [{ role: 'system', content: system }].concat(prior).concat([{ role: 'user', content: userContent }]);
-        var body = { model: m.model, messages: messages, max_tokens: webMode ? 1200 : 800 };
-        // OpenRouter: also attach web plugin when in web mode as extra safety
+        var body = { model: m.model, messages: messages, max_tokens: webMode ? 2500 : 2000 };
         if (webMode && provider.id === 'openrouter') {
           body.plugins = [{ id: 'web', max_results: 5 }];
         }
@@ -320,7 +315,6 @@ module.exports = async function handler(req, res) {
     if (!route) route = { agent_id: 'chat', endpoint: 'chat.answer', params: { prompt: message }, reasoning: 'Default chat' };
     route.thinking = buildThinking(message, route);
 
-    // Kernel browse for explicit URL visits
     if (route.agent_id === 'browse' && kernelLib && kernelLib.tryKernelBrowse) {
       try {
         var k = await kernelLib.tryKernelBrowse(message);

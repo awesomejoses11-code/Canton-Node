@@ -1,84 +1,148 @@
-# Canton Node — Prexzy Multi-Tool Platform
+# Canton Node
 
-Private, stable multi-tool generative platform built on the free
-[Prexzy APIs](https://prexzyapis.com). Vanilla HTML + Tailwind CDN + plain
-JS. Deployable to Vercel with zero build step.
+Private multi-tool generative hub. Vanilla HTML + Tailwind CDN + plain JS, deployed on Vercel with zero build step.
 
-## What's in this build
+The Master Agent routes natural-language requests (chat, image, video, code, TTS, …) and executes them through resilient fallback chains. Specialist agent cards were removed — everything goes through Master; quotas live on the **Limits** tab.
 
-**Step 3 rework — Prexzy-native master router + auth + per-user quotas.**
+**Live:** [canton-node.vercel.app](https://canton-node.vercel.app) · **Repo:** [awesomejoses11-code/Canton-Node](https://github.com/awesomejoses11-code/Canton-Node)
 
-    /
-    ├── index.html            # Auth gate + tabbed hub (Agents / Limits / Settings)
-    ├── js/
-    │   ├── quota.js          # Per-user daily rate limiter (localStorage, midnight auto-refresh)
-    │   ├── auth.js           # Sign-in/register + session persistence (30-day or tab-scoped)
-    │   ├── settings.js       # Per-user customization store (theme, accent, defaults)
-    │   ├── api.js            # Prexzy fetch wrapper (all calls go through here)
-    │   ├── hub.js            # Renders the dashboard + tool picker
-    │   └── master-client.js  # Master Agent browser wiring (route → execute)
-    ├── api/
-    │   └── master.js         # Vercel serverless router — GPT-5.4 via Prexzy Chatex
-    ├── tools.json            # Specialist agent registry
-    ├── skills.json           # Skill index (empty; step 5)
-    ├── mcp-config.json       # MCP servers (empty; step 6)
-    └── vercel.json           # Vercel config (static site + /api functions)
+---
 
-## Key changes vs step 1
+## Architecture
 
-1. **Master router runs on Prexzy, not Anthropic.** The Anthropic keys were
-   emptied, so `api/master.js` now routes with **GPT-5.4 (`/ai/chatex`)** —
-   the most capable model on Prexzy — falling back to **GPT-5
-   (`/ai/askgpt5`)** then **Mistral (`/ai/mistral`)**. No API key needed;
-   no secrets in the repo. The router prompt asks for raw JSON and the
-   function parses it defensively (fences stripped, first `{...}` block).
+```
+/
+├── index.html              # Auth gate + Agents / Limits / Settings tabs
+├── favicon.svg             # Neon circuit badge
+├── vercel.json
+├── tools.json              # Endpoint registry hints
+├── skills.json             # Skill index → skills/*/SKILL.md
+├── mcp-config.json         # MCP servers (optional)
+├── api/
+│   ├── master.js           # Router: OpenRouter free models → HF Qwen/Llama backup
+│   ├── image.js            # Image: HF FLUX.1-schnell → Prexzy
+│   ├── video.js            # Video: Pixazo LTX → Pyramid Flow → Prexzy
+│   ├── video-status.js     # Pixazo task_id polling (key stays server-side)
+│   └── log.js              # Optional client event log
+├── js/
+│   ├── quota.js            # Per-user daily limits (localStorage, midnight refresh)
+│   ├── auth.js             # Sign-in / register (salted SHA-256, local)
+│   ├── settings.js         # Theme, accent, defaults
+│   ├── api.js              # PrexzyAPI: call / callResilient / generateImage / generateVideo
+│   ├── skill-loader.js     # Loads skills.json + SKILL.md frontmatter
+│   ├── hub.js              # Quota dashboard + media wire (image.* / video.* → /api)
+│   ├── history.js          # Chat history drawer
+│   ├── output-actions.js   # Download / Copy media + code + Copy/Edit/Refresh
+│   ├── prexzy-shim.js      # Safety net if api.js fails to load
+│   └── master-client.js    # Master UI: route → Execute → media render
+└── skills/
+    ├── image-generator/
+    ├── video-generator/
+    ├── music-generator/
+    ├── tts/
+    └── code/
+```
 
-2. **Session persistence for logins.** `js/auth.js` keeps registered users
-   as salted SHA-256 hashes in localStorage. "Keep me signed in" persists
-   the session for 30 days (localStorage); unchecked it lives only in the
-   tab (sessionStorage). Sessions auto-restore on load and expire cleanly.
+---
 
-3. **Quota integration + no reset button.** New `master` quota bucket
-   (30/day) consumed by every routing request; the target agent's bucket is
-   consumed on execution via `PrexzyAPI.call` as before. Quotas are scoped
-   per account (`Quota.setScope(email)`) and refresh automatically at local
-   midnight (timer + refresh-on-focus). The manual reset button is gone.
+## Generation chains
 
-4. **Standard, aligned UI.** Single header grid: logo left, centered tab
-   bar (Agents / Limits / Settings — uniform button base classes), user +
-   logout right. Full dark-mode support across every view.
+| Feature | Primary | Backups |
+|---------|---------|---------|
+| **Routing** (Master) | OpenRouter free-model chain | HF Qwen2.5-7B → Llama-3.1-8B |
+| **Image** | Hugging Face **FLUX.1-schnell** | Prexzy (genimage → txt2img → dalle → aiwriter) |
+| **Video** | **Pixazo LTX** (async + poll) | Pyramid Flow (HF) → Prexzy |
 
-5. **User customization (Settings tab).** Display name, theme
-   (system/light/dark), accent color (indigo/violet/emerald/rose/amber),
-   default code language, default image size, default TTS voice (used by
-   the rewired `/tts/<voice>` endpoint), master routing mode
-   (auto/manual), confirm-before-heavy-calls, compact cards. All stored
-   per account and applied instantly.
+Client helpers:
 
-## Local test
+```js
+await PrexzyAPI.generateImage({ prompt, size }, { loadingEl })
+await PrexzyAPI.generateVideo({ prompt, duration: 5 }, { loadingEl, poll: true })
+```
 
-Anything that serves static files works for the UI; the master router
-needs Vercel dev for the `/api/master` function:
+`hub.js` also redirects `callResilient('image.*' | 'video.*')` through those helpers so skills never hit Prexzy first.
 
-    # Full stack (recommended — includes /api/master)
-    npx --yes vercel dev
+---
 
-    # Static only (hub, quota, auth — master routing will 404)
-    python3 -m http.server 8080
+## Daily quotas (per signed-in user)
 
-Then open http://localhost:3000 (vercel dev) or http://localhost:8080.
+Stored in `localStorage` under `prexzy.quota.v2.<email>`, reset at local midnight.
+
+| Bucket | Limit / day |
+|--------|-------------|
+| Master Agent routing | **80** |
+| Text / chat | 80 |
+| TTS | 50 |
+| Code | 50 |
+| Web | 30 |
+| Image → HTML | 25 |
+| HTML → Image | 15 |
+| **Image** | **12** |
+| Music | 8 |
+| **Video** | **4** |
+
+Failed requests refund the consumed unit.
+
+---
+
+## Environment variables (Vercel)
+
+| Variable | Required | Used for |
+|----------|----------|----------|
+| `HF_TOKEN` | Strongly recommended | Image (FLUX), video (Pyramid), Master routing backup |
+| `PIXAZO_API_KEY` | For video | Pixazo LTX primary path |
+| `OPENROUTER_API_KEY` | Optional | Master free-model router (may work without on some setups) |
+
+No Prexzy API key is required for the public endpoints used here.
+
+---
+
+## Local development
+
+```bash
+# Full stack (UI + /api/* serverless)
+npx --yes vercel dev
+
+# Static UI only (master / image / video APIs will 404)
+python3 -m http.server 8080
+```
+
+Open the URL Vercel prints (usually `http://localhost:3000`).
+
+---
 
 ## Deploy
 
-    npx --yes vercel deploy --prod
+```bash
+npx --yes vercel deploy --prod
+```
 
-No environment variables required — the router needs no keys anymore.
+Set the env vars above in the Vercel project settings, then redeploy.
 
-## Roadmap
+---
 
-1. ✅ Static hub + quota + api wrapper
-2. Image Generation specialist (first end-to-end pattern)
-3. ✅ Master Agent orchestrator (Prexzy GPT-5.4 router) + auth + settings
-4. Convert agents into SKILL.md + skill loader
-5. MCP client support
-6. x402 awareness in the Web agent (starts report-only)
+## Auth & settings
+
+- **Auth** is local-only: accounts and salted password hashes live in `localStorage`. “Keep me signed in” uses a 30-day session; otherwise sessionStorage for the tab.
+- **Settings:** display name, theme (system/light/dark), accent color, default code language, image size, TTS voice, routing mode (auto/manual), confirm-before-heavy-calls.
+
+---
+
+## Skills
+
+`skills.json` points at `skills/*/SKILL.md` files (YAML frontmatter + body). `js/skill-loader.js` loads them at runtime. Image and video skills document the server chains above; execution still goes through Master + `PrexzyAPI`.
+
+---
+
+## Notes
+
+- Specialist homepage cards were removed; Master routes everything.
+- Media responses (including nested Prexzy/DALL·E `image_url` shapes) are walked recursively so images actually render.
+- `output-actions.js` adds **Download** / **Copy image|link** under media and **Copy / Edit / Refresh** under assistant bubbles.
+- Video generation is slow (often 30–90s) and scarce (4/day) — loading UI is required.
+
+---
+
+## License
+
+See [LICENSE](./LICENSE).

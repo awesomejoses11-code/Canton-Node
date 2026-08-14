@@ -1,5 +1,1 @@
-(function () {
-  'use strict';
-  // temporary stub - will be replaced
-  console.error('[master-client] incomplete deploy');
-})();
+FILE_FROM_ARTIFACTS_READ_ME

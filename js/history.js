@@ -1,20 +1,7 @@
 /* =========================================================================
  * history.js — Chat history storage for the Master Agent
  *
- * Pure storage layer, no DOM. Sessions are stored per-user in localStorage,
- * mirroring the Settings.load(email)/save(email, s) pattern used elsewhere
- * in the app. All rendering/wiring lives in master-client.js — this file
- * only knows how to persist and retrieve sessions.
- *
- * Storage shape (per user, key: canton_history_<email>):
- *   [ { id, title, createdAt, updatedAt, messages: [
- *         { id, role: 'user' | 'assistant', kind: 'text' | 'route',
- *           content, meta, createdAt }
- *   ] } ]
- *
- * No projects, no artifacts — just flat, linear chats. Newest-updated
- * session sorts first. Capped at MAX_SESSIONS / MAX_MESSAGES_PER_SESSION
- * so a long-lived account doesn't grow localStorage without bound.
+ * localStorage + optional Neon sync (/api/history) when session token exists.
  * ========================================================================= */
 
 (function (global) {
@@ -38,13 +25,58 @@
     }
   }
 
-  function writeAll(email, sessions) {
+  function authToken() {
     try {
-      localStorage.setItem(keyFor(email), JSON.stringify(sessions.slice(0, MAX_SESSIONS)));
+      var u = (typeof Auth !== 'undefined' && Auth.current) ? Auth.current() : null;
+      if (u && u.token) return u.token;
+    } catch (_) {}
+    try {
+      for (var i = 0; i < 2; i++) {
+        var store = i === 0 ? sessionStorage : localStorage;
+        var raw = store.getItem('prexzy.session.v1');
+        if (!raw) continue;
+        var p = JSON.parse(raw);
+        if (p && p.token) return p.token;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function pushToServer(email, sessions) {
+    var t = authToken();
+    if (!t) return;
+    try {
+      fetch('/api/history', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: t, action: 'save', sessions: sessions })
+      }).catch(function () {});
+    } catch (_) {}
+  }
+
+  async function pullFromServer() {
+    var t = authToken();
+    if (!t) return null;
+    try {
+      var res = await fetch('/api/history', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: t, action: 'load' })
+      });
+      var data = await res.json().catch(function () { return null; });
+      if (res.ok && data && data.ok && Array.isArray(data.sessions)) return data.sessions;
+    } catch (_) {}
+    return null;
+  }
+
+  function writeAll(email, sessions) {
+    var capped = sessions.slice(0, MAX_SESSIONS);
+    try {
+      localStorage.setItem(keyFor(email), JSON.stringify(capped));
     } catch (e) {
-      // Storage full/unavailable (e.g. private browsing) — fail silently,
-      // the chat still works for the current tab, it just won't persist.
+      // Storage full/unavailable — still try server.
     }
+    pushToServer(email, capped);
   }
 
   function makeId() {
@@ -59,17 +91,24 @@
 
   const History = {
 
-    /** All sessions for a user, newest-updated first. */
     load(email) {
       return readAll(email).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
     },
 
-    /** One session by id, or null. */
+    /** Pull server history into localStorage (cross-device). */
+    async syncFromServer(email) {
+      var remote = await pullFromServer();
+      if (!remote) return this.load(email);
+      try {
+        localStorage.setItem(keyFor(email), JSON.stringify(remote.slice(0, MAX_SESSIONS)));
+      } catch (_) {}
+      return this.load(email);
+    },
+
     get(email, sessionId) {
       return readAll(email).find(s => s.id === sessionId) || null;
     },
 
-    /** Create a new session titled from the first message, persist, return it. */
     create(email, firstMessageText) {
       const now = new Date().toISOString();
       const session = {
@@ -85,7 +124,6 @@
       return session;
     },
 
-    /** Append a message to a session, persist, return the updated session (or null if missing). */
     appendMessage(email, sessionId, message) {
       const all = readAll(email);
       const session = all.find(s => s.id === sessionId);
@@ -99,7 +137,6 @@
       return session;
     },
 
-    /** Patch fields on one message in place (e.g. after "Execute on Prexzy"). */
     updateMessage(email, sessionId, messageId, patch) {
       const all = readAll(email);
       const session = all.find(s => s.id === sessionId);
@@ -112,7 +149,6 @@
       return msg;
     },
 
-    /** Delete a session outright. */
     delete(email, sessionId) {
       writeAll(email, readAll(email).filter(s => s.id !== sessionId));
     },

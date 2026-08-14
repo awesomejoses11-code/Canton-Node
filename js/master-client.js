@@ -5,6 +5,44 @@
   var attachedFile = null;
   var EXECUTABLE = { image: 1, video: 1, music: 1, tts: 1, code: 1, html2image: 1, mcp: 1, browse: 1 };
 
+  var MAX_ATTACH_BYTES = 4 * 1024 * 1024;
+
+  function fileToAttachment(file) {
+    return new Promise(function (resolve, reject) {
+      if (!file) return resolve(null);
+      if (file.size > MAX_ATTACH_BYTES) {
+        return reject(new Error('File too large (max 4MB). Try a smaller file or crop the image.'));
+      }
+      var reader = new FileReader();
+      reader.onerror = function () { reject(new Error('Could not read file')); };
+      var isText = /^(text\/|application\/(json|xml|javascript|x-javascript))/.test(file.type) ||
+        /\.(txt|md|csv|json|js|ts|py|html|css|xml|svg)$/i.test(file.name);
+      if (isText) {
+        reader.onload = function () {
+          resolve({
+            name: file.name,
+            type: file.type || 'text/plain',
+            kind: 'text',
+            text: String(reader.result || '').slice(0, 120000)
+          });
+        };
+        reader.readAsText(file);
+      } else {
+        reader.onload = function () {
+          var dataUrl = String(reader.result || '');
+          resolve({
+            name: file.name,
+            type: file.type || 'application/octet-stream',
+            kind: file.type.indexOf('image/') === 0 ? 'image' : 'binary',
+            dataUrl: dataUrl,
+            size: file.size
+          });
+        };
+        reader.readAsDataURL(file);
+      }
+    });
+  }
+
   function email() {
     var u = window.Auth && Auth.current && Auth.current();
     return u ? u.email : null;
@@ -170,11 +208,21 @@
     var runBtn = el('master-run');
     if (runBtn) runBtn.disabled = true;
 
+    var attachment = null;
+    try {
+      if (attachedFile) attachment = await fileToAttachment(attachedFile);
+    } catch (attErr) {
+      assistantBox.textContent = String(attErr && attErr.message ? attErr.message : attErr);
+      if (runBtn) runBtn.disabled = false;
+      return;
+    }
+
     var body = {
       message: message,
       history: buildHistoryPayload(),
       prefs: prefs || {},
-      mcp_tools: mcpTools
+      mcp_tools: mcpTools,
+      attachment: attachment
     };
 
     try {
@@ -191,7 +239,8 @@
 
       assistantBox.textContent = '';
       if (data.thinking && window.MasterThinking && MasterThinking.inject) {
-        MasterThinking.inject(assistantBox, data.thinking, null);
+        var dur = (typeof data.thinking_ms === 'number') ? data.thinking_ms : null;
+        MasterThinking.inject(assistantBox, data.thinking, dur);
       }
 
       if (data.server_executed && data.result) {

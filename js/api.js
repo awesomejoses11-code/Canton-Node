@@ -1,5 +1,5 @@
 /* =========================================================================
- * api.js — Central Prexzy API wrapper (restored from PLACEHOLDER)
+ * api.js — Central Prexzy API wrapper + media helpers
  * ========================================================================= */
 (function (global) {
   'use strict';
@@ -51,6 +51,20 @@
         var u = BASE_URL + '/ai/aiart-video?prompt=' + encodeURIComponent(p.prompt || '');
         if (p.image) u += '&image=' + encodeURIComponent(p.image);
         return { url: u };
+      } },
+    'music.aimelody': { path: '/ai/aimelody', method: 'GET', feature: 'music',
+      build: function (p) {
+        return { url: BASE_URL + '/ai/aimelody?prompt=' + encodeURIComponent(p.prompt || p.text || '') };
+      } },
+    'music.text2music.create': { path: '/ai/text2music', method: 'GET', feature: 'music',
+      build: function (p) {
+        return { url: BASE_URL + '/ai/text2music?prompt=' + encodeURIComponent(p.prompt || p.lyrics || '') };
+      } },
+    'tts.default': { path: '/ai/tts', method: 'GET', feature: 'tts',
+      build: function (p) {
+        var u = BASE_URL + '/ai/tts?text=' + encodeURIComponent(p.text || p.prompt || '');
+        if (p.voice) u += '&voice=' + encodeURIComponent(p.voice);
+        return { url: u };
       } }
   };
 
@@ -58,7 +72,9 @@
     'image.txt2img':  ['image.txt2img', 'image.genimage', 'image.aiwriter', 'image.dalle'],
     'image.genimage': ['image.genimage', 'image.txt2img', 'image.aiwriter', 'image.dalle'],
     'image.aiwriter': ['image.aiwriter', 'image.txt2img', 'image.genimage', 'image.dalle'],
-    'image.dalle':    ['image.dalle', 'image.txt2img', 'image.genimage', 'image.aiwriter']
+    'image.dalle':    ['image.dalle', 'image.txt2img', 'image.genimage', 'image.aiwriter'],
+    'music.aimelody': ['music.aimelody', 'music.text2music.create'],
+    'music.text2music.create': ['music.text2music.create', 'music.aimelody']
   };
 
   const PrexzyAPI = {
@@ -81,19 +97,29 @@
       var built = endpoint.build(params || {});
       var res;
       try {
-        res = await fetch(built.url, { method: endpoint.method || 'GET', signal: opts.signal });
+        res = await fetch(built.url, { method: endpoint.method || 'GET', signal: AbortSignal.timeout(60000) });
       } catch (e) {
         if (endpoint.feature && global.Quota) global.Quota.refund(endpoint.feature);
         throw new PrexzyError('network', e.message || 'Network error');
       }
       if (!res.ok) {
         if (endpoint.feature && global.Quota) global.Quota.refund(endpoint.feature);
-        throw new PrexzyError('http', 'HTTP ' + res.status, { status: res.status });
+        var errText = await res.text().catch(function () { return ''; });
+        throw new PrexzyError('http', 'HTTP ' + res.status + (errText ? ': ' + errText.slice(0, 200) : ''));
       }
-      var data = await res.json().catch(function () { return {}; });
-      return data;
+      var ctype = (res.headers.get('content-type') || '').toLowerCase();
+      if (ctype.indexOf('application/json') >= 0) {
+        return await res.json();
+      }
+      if (ctype.indexOf('audio/') === 0 || ctype.indexOf('image/') === 0 || ctype.indexOf('video/') === 0) {
+        var blob = await res.blob();
+        return { url: URL.createObjectURL(blob), _binary: true, contentType: ctype };
+      }
+      var text = await res.text();
+      try { return JSON.parse(text); } catch (_) { return { _text: text }; }
     },
     callResilient: async function (key, params, opts) {
+      opts = opts || {};
       var chain = ALIASES[key] || [key];
       var lastErr = null;
       for (var i = 0; i < chain.length; i++) {
@@ -104,127 +130,65 @@
           if (e.kind === 'quota') throw e;
         }
       }
-      throw lastErr || new PrexzyError('unknown', 'No endpoint available for: ' + key);
+      throw lastErr || new PrexzyError('unknown', 'All endpoints failed for ' + key);
     },
     generateImage: async function (params, opts) {
       opts = opts || {};
-      var prompt = (params && params.prompt) || '';
-      if (!prompt) throw new PrexzyError('unknown', 'Missing prompt for image');
-      if (global.Quota) {
-        var c = global.Quota.consume('image');
-        if (!c.ok) throw new PrexzyError('quota', 'Daily limit reached for "image".', { feature: 'image' });
-      }
       var loading = opts.loadingEl ? showLoading(opts.loadingEl, 'Generating image…') : null;
-      var refunded = false;
-      function refundOnce() {
-        if (!refunded && global.Quota) { global.Quota.refund('image'); refunded = true; }
-      }
       try {
-        if (loading) loading.setMessage('Trying Hugging Face FLUX → Prexzy…');
+        if (global.Quota) {
+          var c = global.Quota.consume('image');
+          if (!c.ok) throw new PrexzyError('quota', 'Daily image limit reached.');
+        }
         var res = await fetch('/api/image', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: prompt, size: params.size || undefined }),
-          signal: opts.signal
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ prompt: (params && params.prompt) || '', size: (params && params.size) || undefined })
         });
         var data = await res.json().catch(function () { return {}; });
         if (!res.ok) {
-          refundOnce();
-          throw new PrexzyError('http', data.error || ('HTTP ' + res.status), { status: res.status });
+          if (global.Quota) global.Quota.refund('image');
+          throw new PrexzyError('http', data.error || ('Image HTTP ' + res.status));
         }
-        if (loading) loading.clear();
-        if (data.url && !data.image_url) data.image_url = data.url;
         return data;
       } catch (e) {
-        refundOnce();
+        if (e.kind !== 'quota' && global.Quota) { /* refund already handled on !ok */ }
+        throw e;
+      } finally {
         if (loading) loading.clear();
-        if (e instanceof PrexzyError) throw e;
-        throw new PrexzyError('network', e.message || 'Image request failed');
       }
     },
     generateVideo: async function (params, opts) {
       opts = opts || {};
-      var prompt = (params && params.prompt) || '';
-      if (!prompt) throw new PrexzyError('unknown', 'Missing prompt for video');
-      if (global.Quota) {
-        var c = global.Quota.consume('video');
-        if (!c.ok) throw new PrexzyError('quota', 'Daily limit reached for "video".', { feature: 'video' });
-      }
-      var loading = opts.loadingEl ? showLoading(opts.loadingEl, 'Generating video… this can take 30–90 s') : null;
-      var refunded = false;
-      function refundOnce() {
-        if (!refunded && global.Quota) { global.Quota.refund('video'); refunded = true; }
-      }
+      var loading = opts.loadingEl ? showLoading(opts.loadingEl, 'Generating video (this can take a minute)…') : null;
       try {
-        if (loading) loading.setMessage('Trying Pixazo → Pyramid Flow → Prexzy…');
+        if (global.Quota) {
+          var c = global.Quota.consume('video');
+          if (!c.ok) throw new PrexzyError('quota', 'Daily video limit reached.');
+        }
         var res = await fetch('/api/video', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            prompt: prompt,
-            duration: params.duration || 5,
-            resolution: params.resolution || '720p',
-            imageUrl: params.image || params.imageUrl || null,
+            prompt: (params && params.prompt) || '',
+            duration: (params && params.duration) || 5,
             poll: opts.poll !== false
-          }),
-          signal: opts.signal
+          })
         });
         var data = await res.json().catch(function () { return {}; });
         if (!res.ok) {
-          refundOnce();
-          throw new PrexzyError('http', data.error || ('HTTP ' + res.status), { status: res.status });
+          if (global.Quota) global.Quota.refund('video');
+          throw new PrexzyError('http', data.error || ('Video HTTP ' + res.status));
         }
-        if (data.task_id && !data.url && opts.poll !== false) {
-          if (loading) loading.setMessage('Waiting for Pixazo…');
-          var finalUrl = await pollPixazoClient(data.task_id, {
-            onProgress: function (s) { if (loading) loading.setMessage('Status: ' + s + '…'); },
-            signal: opts.signal
-          });
-          if (loading) loading.clear();
-          return { url: finalUrl, source: data.source || 'pixazo-ltx', task_id: data.task_id };
-        }
-        if (loading) loading.clear();
-        if (data.url && !data.video_url) data.video_url = data.url;
+        if (loading) loading.setMessage('Almost done…');
         return data;
       } catch (e) {
-        refundOnce();
+        throw e;
+      } finally {
         if (loading) loading.clear();
-        if (e instanceof PrexzyError) throw e;
-        throw new PrexzyError('network', e.message || 'Video request failed');
       }
     }
   };
-
-  async function pollPixazoClient(taskId, opts) {
-    opts = opts || {};
-    var intervalMs = opts.intervalMs || 5000;
-    var timeoutMs = opts.timeoutMs || 4 * 60 * 1000;
-    var started = Date.now();
-    while (true) {
-      if (opts.signal && opts.signal.aborted) throw new PrexzyError('network', 'Polling aborted');
-      var res = await fetch('/api/video-status?task_id=' + encodeURIComponent(taskId), { signal: opts.signal });
-      if (!res.ok) {
-        var t = await res.text();
-        throw new PrexzyError('http', 'Status ' + res.status + ': ' + t.slice(0, 120));
-      }
-      var data = await res.json();
-      var status = String(data.status || '').toUpperCase();
-      if (opts.onProgress) opts.onProgress(status);
-      if (status === 'COMPLETED') {
-        var media = data.output && data.output.media_url;
-        var url = Array.isArray(media) ? media[0] : media;
-        if (!url) throw new PrexzyError('parse', 'Completed but no media_url');
-        return url;
-      }
-      if (status === 'FAILED' || status === 'ERROR') {
-        throw new PrexzyError('http', data.error || ('Pixazo ' + status));
-      }
-      if (Date.now() - started > timeoutMs) {
-        throw new PrexzyError('unknown', 'Video generation timed out');
-      }
-      await new Promise(function (r) { setTimeout(r, intervalMs); });
-    }
-  }
 
   global.PrexzyAPI = PrexzyAPI;
 })(window);

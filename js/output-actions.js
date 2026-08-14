@@ -1,35 +1,16 @@
 /* =========================================================================
  * output-actions.js — Copy / Download / Edit / Refresh controls
- *
- * Every image, audio, video, and code block the app renders should be
- * independently downloadable or copyable, without depending on the user
- * right-clicking a media element. This file is the one place that builds
- * those controls, so every renderer (master-client.js today, specialist
- * agents later) gets the same behavior for free.
- *
- * attachMediaControls(container, mediaEl, url, kind, filenameBase)
- *   Adds a "⬇ Download" + "⧉ Copy image" / "⧉ Copy link" row under an
- *   <img>/<audio>/<video>.
- *
- * attachCodeControls(container, code, filenameBase, ext)
- *   Adds a "⧉ Copy code" + "⬇ Download" row for a plain string of code/text.
- *
- * enhanceCodeBlocks(root)
- *   Scans a markdown-rendered container for <pre><code> blocks.
- *
- * attachMessageActions(box, opts)
- *   Adds Copy / Edit prompt / Regenerate under an assistant bubble.
  * ========================================================================= */
 
 (function (global) {
   'use strict';
 
-  const BTN_CLASS =
+  var BTN_CLASS =
     'inline-flex items-center gap-1 text-[11px] rounded-md border border-slate-300 dark:border-slate-600 ' +
     'px-2 py-1 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition-colors';
 
   function actionBtn(label, title) {
-    const b = document.createElement('button');
+    var b = document.createElement('button');
     b.type = 'button';
     b.className = BTN_CLASS;
     b.textContent = label;
@@ -39,7 +20,7 @@
 
   function flash(btn, text, ms) {
     if (btn.dataset.flashing) return;
-    const original = btn.textContent;
+    var original = btn.textContent;
     btn.dataset.flashing = '1';
     btn.textContent = text;
     setTimeout(function () {
@@ -49,20 +30,20 @@
   }
 
   function extFromUrl(url, kind) {
-    const m = /\.([a-z0-9]{2,5})(?:\?|#|$)/i.exec(url || '');
+    var m = /\.([a-z0-9]{2,5})(?:\?|#|$)/i.exec(url || '');
     if (m) return m[1].toLowerCase();
     return kind === 'image' ? 'png' : kind === 'audio' ? 'mp3' : 'mp4';
   }
 
   async function fetchAsBlob(url) {
-    const res = await fetch(url, { mode: 'cors' });
+    var res = await fetch(url, { mode: 'cors' });
     if (!res.ok) throw new Error('fetch failed: ' + res.status);
     return await res.blob();
   }
 
   function triggerBlobDownload(blob, filename) {
-    const objUrl = URL.createObjectURL(blob);
-    const a = document.createElement('a');
+    var objUrl = URL.createObjectURL(blob);
+    var a = document.createElement('a');
     a.href = objUrl;
     a.download = filename;
     document.body.appendChild(a);
@@ -202,9 +183,37 @@
     });
   }
 
+  /** Walk up to the thread and take the previous user bubble's text. */
+  function recoverUserPrompt(box) {
+    try {
+      var wrap = box && box.parentElement;
+      if (!wrap) return '';
+      var prev = wrap.previousElementSibling;
+      while (prev) {
+        if (prev.classList && prev.classList.contains('flex') && prev.classList.contains('justify-end')) {
+          var bubble = prev.querySelector('div');
+          if (bubble && bubble.textContent) {
+            // Strip attachment chip line if present
+            var t = bubble.childNodes[0] && bubble.childNodes[0].nodeType === 3
+              ? bubble.childNodes[0].textContent
+              : bubble.textContent;
+            return String(t || '').replace(/\s*📎[\s\S]*$/, '').trim();
+          }
+        }
+        prev = prev.previousElementSibling;
+      }
+    } catch (_) {}
+    return '';
+  }
+
   function attachMessageActions(box, opts) {
     opts = opts || {};
-    if (!box || box.querySelector('[data-oa]')) return;
+    if (!box) return;
+    // Replace stale bar so Edit/Regenerate always reflect current opts
+    var existing = box.querySelector('[data-oa]');
+    if (existing) existing.remove();
+
+    var prompt = String(opts.userPrompt || '').trim() || recoverUserPrompt(box);
 
     var bar = document.createElement('div');
     bar.setAttribute('data-oa', '1');
@@ -213,16 +222,18 @@
     var copyBtn = actionBtn('Copy', 'Copy response to clipboard');
     copyBtn.addEventListener('click', function () {
       var text = opts.text || box.innerText || '';
+      // Strip the action bar labels from copied text
+      text = String(text).replace(/\n?Copy\s*Edit prompt\s*↻ Regenerate\s*$/i, '').trim();
       copyText(text, copyBtn);
     });
     bar.appendChild(copyBtn);
 
-    if (opts.userPrompt) {
+    if (prompt) {
       var editBtn = actionBtn('Edit prompt', 'Put this prompt back in the box so you can change it');
       editBtn.addEventListener('click', function () {
         var input = document.getElementById('master-input');
         if (!input) return;
-        input.value = opts.userPrompt;
+        input.value = prompt;
         input.focus();
         input.dispatchEvent(new Event('input', { bubbles: true }));
         input.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -234,7 +245,7 @@
         var input = document.getElementById('master-input');
         var runBtn = document.getElementById('master-run');
         if (!input || !runBtn) return;
-        input.value = opts.userPrompt;
+        input.value = prompt;
         input.dispatchEvent(new Event('input', { bubbles: true }));
         runBtn.click();
       });

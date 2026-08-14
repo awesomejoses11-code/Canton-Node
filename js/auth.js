@@ -1,20 +1,12 @@
 /* =========================================================================
- * auth.js — Client-side auth with session persistence
+ * auth.js — Server-first auth (Neon) with localStorage fallback
  *
- * NEW in this build. The hub now sits behind a sign-in screen and the
- * session survives reloads:
+ * Priority:
+ *   1. /api/auth-register | /api/auth-login | /api/auth-me  (cross-device)
+ *   2. localStorage users (private device gate if DB unavailable)
  *
- *   • "Keep me signed in" checked  → session in localStorage (30 days)
- *   • unchecked                    → session in sessionStorage (tab only)
- *
- * Passwords are never stored in plain text — we keep a salted SHA-256 hash
- * per registered account in localStorage (`prexzy.users.v1`). This is a
- * private-device gate, NOT real server security; it exists to keep casual
- * eyes out of a shared browser profile.
- *
- * Storage:
- *   prexzy.users.v1            { "<email>": { username, email, salt, hash, createdAt } }
- *   prexzy.session.v1 (ls/ss)  { email, username, issuedAt, expiresAt|null }
+ * Session shape (both stores):
+ *   { email, username, token?, issuedAt, expiresAt|null }
  * ========================================================================= */
 
 (function (global) {
@@ -22,17 +14,13 @@
 
   const USERS_KEY   = 'prexzy.users.v1';
   const SESSION_KEY = 'prexzy.session.v1';
-  const SESSION_TTL = 30 * 24 * 60 * 60 * 1000; // 30 days for "keep me signed in"
-
-  // ---- Crypto helpers ------------------------------------------------------
+  const SESSION_TTL = 30 * 24 * 60 * 60 * 1000;
 
   async function sha256(text) {
     if (global.crypto && crypto.subtle) {
       const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
       return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
     }
-    // Non-crypto fallback (old browsers / file:// without secure context):
-    // simple FNV-1a — fine for a private device gate, not for real secrets.
     let h = 0x811c9dc5;
     for (let i = 0; i < text.length; i++) {
       h ^= text.charCodeAt(i);
@@ -45,8 +33,6 @@
     return Math.random().toString(36).slice(2) + Date.now().toString(36);
   }
 
-  // ---- User store ----------------------------------------------------------
-
   function readUsers() {
     try { return JSON.parse(localStorage.getItem(USERS_KEY)) || {}; }
     catch (_) { return {}; }
@@ -55,8 +41,6 @@
     localStorage.setItem(USERS_KEY, JSON.stringify(users));
   }
 
-  // ---- Session store ---------------------------------------------------------
-
   function writeSession(session, persistent) {
     clearSession();
     const store = persistent ? localStorage : sessionStorage;
@@ -64,7 +48,6 @@
   }
 
   function readSession() {
-    // Tab-scoped session wins over the persistent one.
     for (const store of [sessionStorage, localStorage]) {
       let raw = null;
       try { raw = store.getItem(SESSION_KEY); } catch (_) { continue; }
@@ -72,8 +55,8 @@
       try {
         const s = JSON.parse(raw);
         if (s && s.email && (!s.expiresAt || s.expiresAt > Date.now())) return s;
-        store.removeItem(SESSION_KEY); // expired → clean up
-      } catch (_) { /* corrupt entry */ }
+        store.removeItem(SESSION_KEY);
+      } catch (_) {}
     }
     return null;
   }
@@ -83,10 +66,18 @@
     try { sessionStorage.removeItem(SESSION_KEY); } catch (_) {}
   }
 
-  // ---- Public API ----------------------------------------------------------
+  async function serverPost(path, body) {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {})
+    });
+    let data = null;
+    try { data = await res.json(); } catch (_) {}
+    return { res: res, data: data };
+  }
 
   const Auth = {
-    /** Create a new account. Throws on duplicate email / weak input. */
     async register(email, username, password, remember) {
       email = String(email || '').trim().toLowerCase();
       username = String(username || '').trim();
@@ -94,49 +85,100 @@
       if (!username) throw new Error('Pick a user name.');
       if (String(password).length < 6) throw new Error('Password must be at least 6 characters.');
 
+      // Prefer Neon
+      try {
+        const { res, data } = await serverPost('/api/auth-register', {
+          email: email, username: username, password: password
+        });
+        if (res.ok && data && data.ok && data.user) {
+          return this._startSession(data.user, remember, data.token, data.expiresAt);
+        }
+        // 409 / 400 with message — surface to UI (don't fall back silently)
+        if (data && data.error && data.code !== 'no_db') {
+          throw new Error(data.error);
+        }
+        // no_db or network → fall through to local
+      } catch (err) {
+        if (err && err.message && !/fetch|network|Failed to fetch|no_db/i.test(err.message) &&
+            !/DATABASE_URL/i.test(err.message)) {
+          throw err;
+        }
+      }
+
+      // Local fallback
       const users = readUsers();
       if (users[email]) throw new Error('An account with this email already exists. Sign in instead.');
-
       const salt = makeSalt();
       users[email] = {
-        email, username, salt,
+        email: email, username: username, salt: salt,
         hash: await sha256(salt + ':' + password),
         createdAt: Date.now()
       };
       writeUsers(users);
-      return this._startSession(users[email], remember);
+      return this._startSession(users[email], remember, null, null);
     },
 
-    /** Verify credentials and start a session. Throws on bad credentials. */
     async login(email, password, remember) {
       email = String(email || '').trim().toLowerCase();
+
+      try {
+        const { res, data } = await serverPost('/api/auth-login', {
+          email: email, password: password
+        });
+        if (res.ok && data && data.ok && data.user) {
+          return this._startSession(data.user, remember, data.token, data.expiresAt);
+        }
+        if (data && data.error && data.code !== 'no_db') {
+          throw new Error(data.error);
+        }
+      } catch (err) {
+        if (err && err.message && !/fetch|network|Failed to fetch|no_db|DATABASE_URL/i.test(err.message)) {
+          throw err;
+        }
+      }
+
       const user = readUsers()[email];
       if (!user) throw new Error('No account found for this email. Register first.');
       const hash = await sha256(user.salt + ':' + password);
       if (hash !== user.hash) throw new Error('Incorrect password.');
-      return this._startSession(user, remember);
+      return this._startSession(user, remember, null, null);
     },
 
-    /** End the session (both stores) — next load shows the sign-in screen. */
     logout() { clearSession(); },
 
-    /** The currently signed-in user object, or null. Restores the session. */
     current() {
       const s = readSession();
       if (!s) return null;
-      const user = readUsers()[s.email];
-      return user ? { email: user.email, username: user.username } : null;
+      return { email: s.email, username: s.username, token: s.token || null };
     },
 
-    _startSession(user, remember) {
+    /** Optional: refresh server session when a token exists */
+    async refresh() {
+      const s = readSession();
+      if (!s || !s.token) return this.current();
+      try {
+        const { res, data } = await serverPost('/api/auth-me', { token: s.token });
+        if (res.ok && data && data.ok && data.user) {
+          const persistent = !!localStorage.getItem(SESSION_KEY);
+          return this._startSession(data.user, persistent, s.token, data.expiresAt);
+        }
+        if (res.status === 401) clearSession();
+      } catch (_) {}
+      return this.current();
+    },
+
+    _startSession(user, remember, token, expiresAtIso) {
       const session = {
         email: user.email,
         username: user.username,
+        token: token || null,
         issuedAt: Date.now(),
-        expiresAt: remember ? Date.now() + SESSION_TTL : null
+        expiresAt: expiresAtIso
+          ? new Date(expiresAtIso).getTime()
+          : (remember ? Date.now() + SESSION_TTL : null)
       };
       writeSession(session, !!remember);
-      return { email: user.email, username: user.username };
+      return { email: user.email, username: user.username, token: session.token };
     }
   };
 

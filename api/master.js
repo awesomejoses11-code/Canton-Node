@@ -130,7 +130,7 @@ module.exports = async function handler(req, res) {
       history = body.history
         .filter(function (m) { return m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string'; })
         .slice(-12)
-        .map(function (m) { return { role: m.role, content: String(m.content).slice(0, 2000); }; });
+        .map(function (m) { return { role: m.role, content: String(m.content).slice(0, 2000) }; });
     }
 
     if (!message && !(attachment && (attachment.dataUrl || attachment.text))) {

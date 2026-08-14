@@ -3,8 +3,8 @@
  *
  * Chain (confirmed 2026-08-14):
  *   1. Pixazo LTX (primary)
- *   2. Prexzy (backup)
- *   3. Pyramid Flow / HF (last resort)
+ *   2. Pyramid Flow / HF (first backup)
+ *   3. Prexzy (final backup)
  *
  * POST /api/video
  * Body: { prompt, duration?, resolution?, imageUrl?, poll?: true }
@@ -106,30 +106,6 @@ async function tryPixazo(prompt, options) {
   return await pollPixazo(taskId, pixazoKey);
 }
 
-async function tryPrexzy(prompt, options) {
-  const usp = new URLSearchParams({ prompt: prompt });
-  if (options.imageUrl) usp.set('image', options.imageUrl);
-  if (options.style) usp.set('style', options.style);
-
-  const res = await fetch(PREXZY_BASE + '/ai/aiart-video?' + usp.toString(), {
-    method: 'GET',
-    signal: AbortSignal.timeout(25000)
-  });
-
-  if (!res.ok) throw new Error('Prexzy video HTTP ' + res.status);
-
-  const data = await res.json().catch(function () { return null; });
-  if (data && (data.url || data.video_url || data.video || data.task_id)) {
-    return {
-      url: data.url || data.video_url || data.video || null,
-      task_id: data.task_id || null,
-      source: 'prexzy',
-      raw: data
-    };
-  }
-  throw new Error('Prexzy video: no usable payload');
-}
-
 async function tryPyramid(prompt, options) {
   const hfToken = process.env.HF_TOKEN;
   if (!hfToken) throw new Error('HF_TOKEN not set');
@@ -164,12 +140,36 @@ async function tryPyramid(prompt, options) {
     return {
       source: 'pyramid-flow',
       status: 'binary',
-      note: 'HF returned binary video; prefer Pixazo/Prexzy for durable URLs.'
+      note: 'HF returned binary video; prefer Pixazo for durable URLs.'
     };
   }
 
   const data = await res.json();
   return Object.assign({}, data, { source: 'pyramid-flow' });
+}
+
+async function tryPrexzy(prompt, options) {
+  const usp = new URLSearchParams({ prompt: prompt });
+  if (options.imageUrl) usp.set('image', options.imageUrl);
+  if (options.style) usp.set('style', options.style);
+
+  const res = await fetch(PREXZY_BASE + '/ai/aiart-video?' + usp.toString(), {
+    method: 'GET',
+    signal: AbortSignal.timeout(25000)
+  });
+
+  if (!res.ok) throw new Error('Prexzy video HTTP ' + res.status);
+
+  const data = await res.json().catch(function () { return null; });
+  if (data && (data.url || data.video_url || data.video || data.task_id)) {
+    return {
+      url: data.url || data.video_url || data.video || null,
+      task_id: data.task_id || null,
+      source: 'prexzy',
+      raw: data
+    };
+  }
+  throw new Error('Prexzy video: no usable payload');
 }
 
 async function generateVideoWithFallback(prompt, options) {
@@ -187,23 +187,23 @@ async function generateVideoWithFallback(prompt, options) {
   try {
     return await tryPixazo(prompt, opts);
   } catch (err) {
-    console.warn('[Video] Pixazo failed → Prexzy', err.message);
+    console.warn('[Video] Pixazo failed → Pyramid Flow', err.message);
     errors.push('Pixazo: ' + err.message);
   }
 
-  // 2) Prexzy backup
-  try {
-    return await tryPrexzy(prompt, opts);
-  } catch (err) {
-    console.warn('[Video] Prexzy failed → Pyramid', err.message);
-    errors.push('Prexzy: ' + err.message);
-  }
-
-  // 3) Pyramid last resort
+  // 2) Pyramid Flow first backup
   try {
     return await tryPyramid(prompt, opts);
   } catch (err) {
+    console.warn('[Video] Pyramid failed → Prexzy', err.message);
     errors.push('Pyramid: ' + err.message);
+  }
+
+  // 3) Prexzy final backup
+  try {
+    return await tryPrexzy(prompt, opts);
+  } catch (err) {
+    errors.push('Prexzy: ' + err.message);
   }
 
   throw new Error(

@@ -85,23 +85,61 @@
     return b;
   }
 
+  function simpleMarkdownToHtml(src) {
+    var s = String(src == null ? '' : src);
+    s = s.replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>');
+    s = s.replace(/```([\s\S]*?)```/g, function (_, code) {
+      return '<pre><code>' + code.replace(/^\n+|\n+$/g, '') + '</code></pre>';
+    });
+    s = s.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+    s = s.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+    s = s.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+    s = s.replace(/(?:^|\n)((?:- .+(?:\n|$))+)/g, function (block) {
+      var items = block.trim().split(/\n/).map(function (line) {
+        return '<li>' + line.replace(/^- /, '') + '</li>';
+      }).join('');
+      return '\n<ul>' + items + '</ul>\n';
+    });
+    s = s.replace(/\n\n+/g, '</p><p>');
+    s = s.replace(/\n/g, '<br>\n');
+    s = '<p>' + s + '</p>';
+    s = s.replace(/<p>\s*(<h[1-3]>)/g, '$1');
+    s = s.replace(/(<\/h[1-3]>)\s*<\/p>/g, '$1');
+    s = s.replace(/<p>\s*(<ul>)/g, '$1');
+    s = s.replace(/(<\/ul>)\s*<\/p>/g, '$1');
+    s = s.replace(/<p>\s*(<pre>)/g, '$1');
+    s = s.replace(/(<\/pre>)\s*<\/p>/g, '$1');
+    s = s.replace(/<p>\s*<\/p>/g, '');
+    return s;
+  }
+
   function renderMarkdownInto(el, text) {
     var raw = String(text == null ? '' : text);
     raw = raw.replace(/^#{6,}\s*$/gm, '');
     var html = null;
     try {
-      if (window.marked && typeof marked.parse === 'function') html = marked.parse(raw, { breaks: true });
-      else if (window.marked && typeof marked === 'function') html = marked(raw);
-    } catch (_) { html = null; }
-    if (html && window.DOMPurify) {
-      el.classList.add('markdown-body');
-      el.innerHTML = DOMPurify.sanitize(html);
-    } else if (html) {
-      el.classList.add('markdown-body');
+      var m = window.marked;
+      if (m && typeof m.parse === 'function') html = m.parse(raw, { breaks: true });
+      else if (m && m.marked && typeof m.marked.parse === 'function') html = m.marked.parse(raw, { breaks: true });
+      else if (typeof m === 'function') html = m(raw);
+    } catch (e) {
+      console.warn('[markdown] marked failed', e);
+      html = null;
+    }
+    if (!html) html = simpleMarkdownToHtml(raw);
+    el.classList.add('markdown-body');
+    try {
+      if (window.DOMPurify && typeof DOMPurify.sanitize === 'function') {
+        el.innerHTML = DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+      } else {
+        el.innerHTML = html;
+      }
+    } catch (e2) {
+      console.warn('[markdown] sanitize failed', e2);
       el.innerHTML = html;
-    } else {
-      el.classList.remove('markdown-body');
-      el.textContent = raw;
     }
   }
 

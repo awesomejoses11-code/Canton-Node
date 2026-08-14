@@ -1,4 +1,4 @@
-/* api/master.js — compact master (Chrome-safe restore + attachment analyze) */
+/* api/master.js — compact master (Chrome-safe restore + attachment analyze + memory) */
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const VINCI_URL = 'https://vinci.getsimpledirect.com/api/v1/chat/completions';
 const HF_URL = 'https://router.huggingface.co/v1/chat/completions';
@@ -26,10 +26,6 @@ function authHeaders(provider, apiKey) {
   return h;
 }
 
-async function safeText(resp) {
-  try { return await resp.text(); } catch (_) { return ''; }
-}
-
 function normalizeMcpTools(raw) {
   if (!Array.isArray(raw)) return [];
   return raw.slice(0, 40).map(function (t) {
@@ -44,12 +40,11 @@ function normalizeMcpTools(raw) {
 }
 
 function buildThinking(message, route) {
-  var lines = [
+  return [
     '1. Understood: "' + String(message || '').replace(/\s+/g, ' ').trim().slice(0, 120) + '"',
     '2. Route → ' + (route && route.agent_id ? route.agent_id : 'chat'),
     '3. Execute path prepared; format the final answer for a human reader.'
-  ];
-  return lines.join('\n');
+  ].join('\n');
 }
 
 function heuristicRoute(message, mcpTools) {
@@ -78,9 +73,36 @@ function heuristicRoute(message, mcpTools) {
   return null;
 }
 
-async function tryGenerateAnswer(message, history, prefs) {
+function buildChatSystemPrompt(prefs, memory) {
+  var name = (prefs && prefs.displayName) ? String(prefs.displayName).trim() : '';
+  var tone = (prefs && prefs.tone) ? String(prefs.tone) : 'friendly';
+  var lines = [
+    'You are the Canton Node Master Agent — a multi-tool assistant (chat, image, video, music, TTS, code, MCP, browse).',
+    'Always answer in clean standard Markdown, like a GitHub README: clear headings, short paragraphs, and bullet lists when helpful.',
+    'Do not overuse bold or italic markers. Prefer plain prose and structured lists.',
+    'Never include internal hashes, request IDs, raw JSON, or tool dumps unless the user explicitly asks for them.',
+    'Never claim you lack tools when a suitable tool exists; for generation tasks, the client may show an Execute control.'
+  ];
+  if (name) lines.push('Address the user as "' + name.replace(/"/g, '') + '" when natural.');
+  lines.push('Reply tone: ' + tone + '.');
+  if (memory && memory.enabled) {
+    if (memory.reference) {
+      lines.push('--- Agent reference (persistent memory) ---');
+      lines.push(String(memory.reference).slice(0, 6000));
+    }
+    if (memory.user_logs) {
+      lines.push('--- User log / preferences (persistent memory) ---');
+      lines.push(String(memory.user_logs).slice(0, 6000));
+    }
+    lines.push('Respect preferences and custom commands from the user log when relevant.');
+  }
+  return lines.join('\n');
+}
+
+async function tryGenerateAnswer(message, history, prefs, memory) {
   var attempts = [];
   var prior = (history || []).slice(-8);
+  var system = buildChatSystemPrompt(prefs || {}, memory || null);
   for (var pi = 0; pi < LLM_CHAIN.length; pi++) {
     var provider = LLM_CHAIN[pi];
     var apiKey = process.env[provider.envKey];
@@ -89,7 +111,7 @@ async function tryGenerateAnswer(message, history, prefs) {
       var m = provider.models[mi];
       try {
         var messages = [
-          { role: 'system', content: 'You are the Canton Node Master Agent. Be clear and helpful. Tools exist for image/video/music/TTS/MCP/browse.' }
+          { role: 'system', content: system }
         ].concat(prior).concat([{ role: 'user', content: message }]);
         var resp = await fetch(provider.url, {
           method: 'POST',
@@ -123,6 +145,7 @@ module.exports = async function handler(req, res) {
     var body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
     var message = String(body.message || '').trim();
     var prefs = (body.prefs && typeof body.prefs === 'object') ? body.prefs : {};
+    var memory = (body.memory && typeof body.memory === 'object') ? body.memory : null;
     var mcpTools = normalizeMcpTools(body.mcp_tools);
     var attachment = body.attachment || null;
     var history = [];
@@ -185,7 +208,7 @@ module.exports = async function handler(req, res) {
     }
 
     if (route.agent_id === 'chat' || route.agent_id === 'web' || route.agent_id === 'analyze') {
-      var gen = await tryGenerateAnswer(message, history, prefs);
+      var gen = await tryGenerateAnswer(message, history, prefs, memory);
       res.status(200).json({
         ok: true,
         agent_id: route.agent_id,

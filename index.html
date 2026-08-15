@@ -251,13 +251,13 @@
         <section class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-5">
           <div class="mb-3">
             <h2 class="text-base font-display font-semibold mb-1">Agent memory</h2>
-            <p class="text-xs text-slate-500 dark:text-slate-400">Stored on Neon per account. <span class="font-mono text-[10px]">reference.md</span> + <span class="font-mono text-[10px]">user_logs.md</span>.</p>
+            <p class="text-xs text-slate-500 dark:text-slate-400">Silent memory for Master when enabled. Preferences are stored automatically — no manual file editing.</p>
           </div>
           <label class="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400 select-none mb-3">
             <input id="set-memory-enabled" type="checkbox" class="rounded border-slate-300 text-brand-600 focus:ring-brand-500" checked />
             Use memory when Master answers
           </label>
-          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 hidden" id="docs-editor-panel" aria-hidden="true">
             <div>
               <div class="flex items-center justify-between mb-1">
                 <label class="text-xs font-medium">reference.md</label>
@@ -273,13 +273,13 @@
               <textarea id="docs-user-logs" rows="10" class="w-full rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-brand-500" placeholder="# User log…"></textarea>
             </div>
           </div>
-          <p id="docs-status" class="mt-2 text-[11px] text-slate-500"></p>
+          <p id="docs-status" class="mt-2 text-[11px] text-slate-500 hidden"></p>
         </section>
         <section class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-5">
           <div class="flex items-start justify-between gap-3 mb-4">
             <div>
               <h2 class="text-base font-display font-semibold mb-1">MCP Servers</h2>
-              <p class="text-xs text-slate-500 dark:text-slate-400">Connect remote MCP endpoints (HTTPS).</p>
+              <p class="text-xs text-slate-500 dark:text-slate-400">Connect remote MCP endpoints (HTTPS). Use only when you explicitly ask Master to call a tool.</p>
             </div>
             <button type="button" id="mcp-add-btn" class="shrink-0 rounded-lg bg-brand-600 text-white px-3 py-1.5 text-xs font-medium hover:bg-brand-700">+ Add</button>
           </div>
@@ -342,7 +342,6 @@
       if (activeTab === 'limits' && window.Hub && Hub.refresh) Hub.refresh();
       if (activeTab === 'settings') {
         if (window.renderMcpList) window.renderMcpList();
-        if (window.loadDocsIntoSettings) loadDocsIntoSettings();
       }
     }
     document.querySelectorAll('.tab-btn').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
@@ -376,7 +375,6 @@
       document.getElementById('set-compact-cards').checked = s.compactCards;
       var memEl = document.getElementById('set-memory-enabled');
       if (memEl) memEl.checked = s.memoryEnabled !== false;
-      if (window.loadDocsIntoSettings) loadDocsIntoSettings();
     }
     async function enterApp(user) {
       Quota.setScope(user.email);
@@ -428,26 +426,6 @@
       if (window.Hub && Hub.refresh) Hub.refresh();
       const ok = document.getElementById('settings-saved'); ok.classList.remove('hidden'); setTimeout(() => ok.classList.add('hidden'), 2000);
     });
-    async function loadDocsIntoSettings() {
-      var status = document.getElementById('docs-status');
-      if (!window.DocsClient) { if (status) status.textContent = 'Docs client not loaded.'; return; }
-      if (status) status.textContent = 'Loading memory from Neon…';
-      var res = await DocsClient.list();
-      if (!res.ok) { if (status) status.textContent = res.error || 'Could not load docs'; return; }
-      var ref = document.getElementById('docs-reference'); var logs = document.getElementById('docs-user-logs');
-      if (ref) ref.value = res.docs.reference || ''; if (logs) logs.value = res.docs.user_logs || '';
-      if (status) status.textContent = 'Memory loaded from Neon.';
-    }
-    window.loadDocsIntoSettings = loadDocsIntoSettings;
-    async function saveDocKey(key, textareaId) {
-      var status = document.getElementById('docs-status'); var ta = document.getElementById(textareaId);
-      if (!ta || !window.DocsClient) return;
-      if (status) status.textContent = 'Saving ' + key + '…';
-      var res = await DocsClient.save(key, ta.value);
-      if (status) { status.textContent = res.ok ? ('Saved ' + key + ' to Neon.') : (res.error || 'Save failed'); status.className = res.ok ? 'mt-2 text-[11px] text-emerald-600' : 'mt-2 text-[11px] text-rose-500'; }
-    }
-    var btnRef = document.getElementById('docs-save-reference'); if (btnRef) btnRef.addEventListener('click', function () { saveDocKey('reference', 'docs-reference'); });
-    var btnLogs = document.getElementById('docs-save-user-logs'); if (btnLogs) btnLogs.addEventListener('click', function () { saveDocKey('user_logs', 'docs-user-logs'); });
     function mcpCurrentEmail() { const u = Auth.current(); return u ? u.email : 'anon'; }
     function renderMcpList() {
       if (!window.MCPClient) return;
@@ -457,8 +435,7 @@
       servers.forEach(function (s) {
         const card = document.createElement('div');
         card.className = 'flex flex-col sm:flex-row sm:items-center gap-2 p-3 rounded-xl border border-slate-200 dark:border-slate-600';
-        const toolCount = (s.lastTools && s.lastTools.length) || 0;
-        card.innerHTML = '<div class="flex-1 min-w-0"><div class="flex items-center gap-2"><span class="text-sm font-medium truncate">' + escapeHtml(s.name) + '</span>' + (s.enabled ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700">on</span>' : '<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">off</span>') + '</div><p class="text-[11px] text-slate-400 font-mono truncate">' + escapeHtml(s.url) + '</p></div><div class="flex flex-wrap gap-1.5"><button type="button" data-mcp-action="toggle" data-id="' + s.id + '" class="text-xs px-2 py-1 rounded-lg border">' + (s.enabled ? 'Disable' : 'Enable') + '</button><button type="button" data-mcp-action="refresh" data-id="' + s.id + '" class="text-xs px-2 py-1 rounded-lg border">Refresh</button><button type="button" data-mcp-action="remove" data-id="' + s.id + '" class="text-xs px-2 py-1 rounded-lg border text-rose-600">Remove</button></div>';
+        card.innerHTML = '<div class="flex-1 min-w-0"><div class="flex items-center gap-2"><span class="text-sm font-medium truncate">' + escapeHtml(s.name) + '</span>' + (s.enabled ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">on</span>' : '<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">off</span>') + '</div><p class="text-[11px] text-slate-400 font-mono truncate">' + escapeHtml(s.url) + '</p></div><div class="flex flex-wrap gap-1.5"><button type="button" data-mcp-action="toggle" data-id="' + s.id + '" class="text-xs px-2 py-1 rounded-lg border">' + (s.enabled ? 'Disable' : 'Enable') + '</button><button type="button" data-mcp-action="refresh" data-id="' + s.id + '" class="text-xs px-2 py-1 rounded-lg border">Refresh</button><button type="button" data-mcp-action="remove" data-id="' + s.id + '" class="text-xs px-2 py-1 rounded-lg border text-rose-600">Remove</button></div>';
         listEl.appendChild(card);
       });
       listEl.querySelectorAll('[data-mcp-action]').forEach(function (btn) {

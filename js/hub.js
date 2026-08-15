@@ -1,14 +1,9 @@
 /* =========================================================================
  * hub.js — Renders the quota dashboard on the Limits tab.
- *
- * Specialist agent cards were removed from the Agents tab — Master Agent
- * routes automatically and quotas already appear under Limits.
  * ========================================================================= */
 
 (function () {
   'use strict';
-
-  // ---- Quota dashboard ----------------------------------------------------
 
   function renderQuota() {
     const grid = document.getElementById('quota-grid');
@@ -19,6 +14,18 @@
     if (snap[0] && dateEl) dateEl.textContent = 'Refreshes at midnight · ' + snap[0].date;
 
     grid.innerHTML = snap.map(row => {
+      if (row.unlimited || row.limit == null) {
+        return `
+        <div class="rounded-xl border border-slate-200 dark:border-slate-700 p-3 bg-slate-50/40 dark:bg-slate-900/40">
+          <div class="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+            <span>${escapeHtml(row.label)}</span>
+            <span><b class="text-slate-700 dark:text-slate-200">${row.used}</b> · Unlimited</span>
+          </div>
+          <div class="mt-2 h-1.5 w-full bg-slate-200 dark:bg-slate-700 rounded overflow-hidden">
+            <div class="quota-bar h-full bg-emerald-500" style="width:4%"></div>
+          </div>
+        </div>`;
+      }
       const pct = row.limit ? Math.min(100, (row.used / row.limit) * 100) : 0;
       const barColor = row.remaining === 0
         ? 'bg-rose-500'
@@ -38,13 +45,12 @@
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, ch => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      '&': '&', '<': '<', '>': '>', '"': '"', "'": '&#39;'
     }[ch]));
   }
 
-  // Kept for compatibility with any remaining callers / future tools.
   window.PlatformUI = {
-    registerTool() { /* no-op — specialist cards removed from homepage */ },
+    registerTool() {},
     escapeHtml
   };
 
@@ -64,7 +70,6 @@
 })();
 
 
-/* ---- Media generation wiring (image HF→Prexzy, video Pixazo→Pyramid→Prexzy) ---- */
 (function (global) {
   'use strict';
   function wire() {
@@ -113,9 +118,6 @@
       };
     }
 
-    // Route image.* / video.* through the server-side fallback chains
-    // (image: HF FLUX → Prexzy; video: Pixazo → Pyramid → Prexzy)
-    // so specialist skills and Execute buttons never hit Prexzy first.
     if (global.PrexzyAPI.callResilient && !global.PrexzyAPI._mediaWire) {
       global.PrexzyAPI._mediaWire = true;
       var orig = global.PrexzyAPI.callResilient.bind(global.PrexzyAPI);
@@ -138,7 +140,6 @@
   }
 })(window);
 
-/* Inject favicon + Open Graph tags if missing */
 (function () {
   if (document.querySelector('link[rel="icon"]')) return;
   var head = document.head;

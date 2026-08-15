@@ -2,11 +2,14 @@
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const VINCI_URL = 'https://vinci.getsimpledirect.com/api/v1/chat/completions';
 const HF_URL = 'https://router.huggingface.co/v1/chat/completions';
+const ZHIPU_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
 var analyzeAttachment = require('../lib/analyze-attachment').analyzeAttachment;
 var kernelLib = null;
 try { kernelLib = require('../lib/kernel-lib'); } catch (_) { kernelLib = null; }
 
 const LLM_CHAIN = [
+  { id: 'zhipu', url: ZHIPU_URL, envKey: 'ZAI_API_KEY', altEnvKeys: ['ZHIPU_API_KEY', 'BIGMODEL_API_KEY'],
+    models: [{ model: 'glm-5', label: 'GLM-5' }] },
   { id: 'vinci', url: VINCI_URL, envKey: 'VINCI_API_KEY', models: [{ model: 'forte', label: 'Vinci Forte' }] },
   { id: 'openrouter', url: OPENROUTER_URL, envKey: 'OPENROUTER_API_KEY', models: [
     { model: 'meta-llama/llama-3.3-70b-instruct:free', label: 'OR Llama 3.3' },
@@ -16,6 +19,33 @@ const LLM_CHAIN = [
     { model: 'Qwen/Qwen2.5-7B-Instruct', label: 'HF Qwen2.5' }
   ]}
 ];
+
+function providerApiKey(provider) {
+  var keys = [provider.envKey].concat(provider.altEnvKeys || []);
+  for (var i = 0; i < keys.length; i++) {
+    var v = process.env[keys[i]];
+    if (v) return v;
+  }
+  return null;
+}
+
+/** Reorder LLM chain from user preference; always fall through if preferred fails. */
+function orderedLlmChain(prefs) {
+  var preferred = String((prefs && (prefs.llmProvider || prefs.chatModel)) || 'auto').toLowerCase().trim();
+  var alias = { glm: 'zhipu', 'glm-5': 'zhipu', zai: 'zhipu', bigmodel: 'zhipu', or: 'openrouter' };
+  if (alias[preferred]) preferred = alias[preferred];
+  var chain = LLM_CHAIN.slice();
+  if (!preferred || preferred === 'auto') return chain;
+  var idx = -1;
+  for (var i = 0; i < chain.length; i++) {
+    if (chain[i].id === preferred) { idx = i; break; }
+  }
+  if (idx > 0) {
+    var pick = chain.splice(idx, 1)[0];
+    chain.unshift(pick);
+  }
+  return chain;
+}
 
 function authHeaders(provider, apiKey) {
   var h = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKey };
@@ -188,7 +218,8 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
               { role: 'system', content: buildChatSystemPrompt(prefs || {}, memory || null, true) }
             ].concat(prior).concat([{ role: 'user', content: message }]),
             max_tokens: 2500,
-            plugins: [{ id: 'web', max_results: 5 }]
+            plugins: [{ id: 'web', max_results: 5 }
+            ]
           };
           var orResp = await fetch(OPENROUTER_URL, {
             method: 'POST',
@@ -234,9 +265,10 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
   }
 
   var system = buildChatSystemPrompt(prefs || {}, memory || null, webMode);
-  for (var pi = 0; pi < LLM_CHAIN.length; pi++) {
-    var provider = LLM_CHAIN[pi];
-    var apiKey = process.env[provider.envKey];
+  var chain = orderedLlmChain(prefs || {});
+  for (var pi = 0; pi < chain.length; pi++) {
+    var provider = chain[pi];
+    var apiKey = providerApiKey(provider);
     if (!apiKey) { attempts.push({ endpoint: provider.id, error: 'key missing' }); continue; }
     for (var mi = 0; mi < provider.models.length; mi++) {
       var m = provider.models[mi];
@@ -341,7 +373,7 @@ module.exports = async function handler(req, res) {
         thinking: route.thinking,
         thinking_ms: 0,
         server_executed: !!gen.text,
-        result: gen.text || 'No model answered. Check API keys (VINCI / OPENROUTER) and try again.',
+        result: gen.text || 'No model answered. Check API keys (ZAI / VINCI / OPENROUTER) and try again.',
         model_used: gen.model,
         provider: gen.provider,
         attempts: gen.attempts || [],

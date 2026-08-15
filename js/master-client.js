@@ -2,7 +2,8 @@
   'use strict';
 
   var currentSessionId = null;
-  var attachedFile = null;
+  var attachedFiles = [];
+  var MAX_ATTACH_COUNT = 8;
   var EXECUTABLE = { image: 1, video: 1, music: 1, tts: 1, code: 1, html2image: 1, mcp: 1, browse: 1 };
   var MAX_ATTACH_BYTES = 4 * 1024 * 1024;
   var assistantReplyCount = 0;
@@ -44,12 +45,61 @@
   }
   function el(id) { return document.getElementById(id); }
 
+  function renderAttachmentBar() {
+    var box = el('master-attachment');
+    var name = el('master-attachment-name');
+    if (!box) return;
+    if (!attachedFiles.length) {
+      box.classList.add('hidden');
+      if (name) name.textContent = '';
+      return;
+    }
+    box.classList.remove('hidden');
+    if (name) {
+      if (attachedFiles.length === 1) name.textContent = attachedFiles[0].name;
+      else name.textContent = attachedFiles.length + ' files: ' + attachedFiles.map(function (f) { return f.name; }).join(', ');
+    }
+  }
+
   function clearAttachment() {
-    attachedFile = null;
+    attachedFiles = [];
     var inp = el('master-file-input');
     if (inp) inp.value = '';
-    var box = el('master-attachment');
-    if (box) box.classList.add('hidden');
+    renderAttachmentBar();
+  }
+
+  function addFiles(fileList) {
+    if (!fileList || !fileList.length) return;
+    var added = 0;
+    for (var i = 0; i < fileList.length; i++) {
+      if (attachedFiles.length >= MAX_ATTACH_COUNT) break;
+      var f = fileList[i];
+      if (!f) continue;
+      if (f.size > MAX_ATTACH_BYTES) {
+        console.warn('[attach] skip oversized', f.name);
+        continue;
+      }
+      attachedFiles.push(f);
+      added++;
+    }
+    renderAttachmentBar();
+    return added;
+  }
+
+  function fileFromClipboardItem(item) {
+    return new Promise(function (resolve) {
+      if (!item || !item.type || item.type.indexOf('image/') !== 0) return resolve(null);
+      var blob = item.getAsFile ? item.getAsFile() : null;
+      if (!blob) return resolve(null);
+      var ext = (blob.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+      var name = 'paste-' + Date.now() + '.' + ext;
+      try {
+        resolve(new File([blob], name, { type: blob.type || 'image/png' }));
+      } catch (_) {
+        blob.name = name;
+        resolve(blob);
+      }
+    });
   }
 
   function appendUser(text, meta) {
@@ -61,10 +111,11 @@
     var b = document.createElement('div');
     b.className = 'max-w-[92%] rounded-2xl bg-brand-600 text-white text-sm px-3 py-2 whitespace-pre-wrap';
     b.textContent = text;
-    if (meta && meta.attachmentName) {
+    if (meta && (meta.attachmentName || meta.attachmentNames)) {
       var chip = document.createElement('div');
       chip.className = 'mt-1 text-[11px] text-brand-100';
-      chip.textContent = '📎 ' + meta.attachmentName;
+      var labels = meta.attachmentNames || [meta.attachmentName];
+      chip.textContent = '📎 ' + labels.join(', ');
       b.appendChild(chip);
     }
     wrap.appendChild(b);
@@ -88,7 +139,7 @@
 
   function simpleMarkdownToHtml(src) {
     var s = String(src == null ? '' : src);
-    s = s.replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>');
+    s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     s = s.replace(/```([\s\S]*?)```/g, function (_, code) {
       return '<pre><code>' + code.replace(/^\n+|\n+$/g, '') + '</code></pre>';
     });
@@ -300,12 +351,17 @@
   async function runMaster() {
     var input = el('master-input');
     var message = (input && input.value || '').trim();
-    if (!message && !attachedFile) return;
-    if (!message && attachedFile) message = 'Please analyze this file: ' + attachedFile.name;
+    if (!message && !attachedFiles.length) return;
+    if (!message && attachedFiles.length) {
+      message = attachedFiles.length === 1
+        ? ('Please analyze this file: ' + attachedFiles[0].name)
+        : ('Please analyze these files: ' + attachedFiles.map(function (f) { return f.name; }).join(', '));
+    }
 
     var em = email();
     var prefs = (window.Settings && em) ? Settings.load(em) : {};
     var mcpTools = await loadMcpTools();
+    var attachNames = attachedFiles.map(function (f) { return f.name; });
 
     if (window.History && em) {
       if (!currentSessionId) {
@@ -314,21 +370,37 @@
       }
       History.appendMessage(em, currentSessionId, {
         id: History.makeId(), role: 'user', kind: 'text', content: message,
-        meta: attachedFile ? { attachmentName: attachedFile.name } : {},
+        meta: attachNames.length ? { attachmentNames: attachNames, attachmentName: attachNames[0] } : {},
         createdAt: Date.now()
       });
       renderHistoryList();
     }
 
-    appendUser(message, attachedFile ? { attachmentName: attachedFile.name } : null);
+    appendUser(message, attachNames.length ? { attachmentNames: attachNames } : null);
     if (input) input.value = '';
     var assistantBox = appendAssistant();
     var runBtn = el('master-run');
     if (runBtn) runBtn.disabled = true;
 
     var attachment = null;
+    var attachments = [];
     try {
-      if (attachedFile) attachment = await fileToAttachment(attachedFile);
+      for (var ai = 0; ai < attachedFiles.length; ai++) {
+        var one = await fileToAttachment(attachedFiles[ai]);
+        if (one) attachments.push(one);
+      }
+      var imageAtt = null;
+      var textBits = [];
+      for (var bi = 0; bi < attachments.length; bi++) {
+        if (attachments[bi].kind === 'image' && !imageAtt) imageAtt = attachments[bi];
+        else if (attachments[bi].kind === 'text' && attachments[bi].text) {
+          textBits.push('--- ' + attachments[bi].name + ' ---\n' + attachments[bi].text);
+        }
+      }
+      if (textBits.length) {
+        message = message + '\n\n' + textBits.join('\n\n');
+      }
+      attachment = imageAtt || attachments[0] || null;
     } catch (attErr) {
       assistantBox.textContent = String(attErr && attErr.message ? attErr.message : attErr);
       if (runBtn) runBtn.disabled = false;
@@ -342,7 +414,8 @@
       prefs: prefs || {},
       memory: memory,
       mcp_tools: mcpTools,
-      attachment: attachment
+      attachment: attachment,
+      attachments: attachments
     };
 
     try {
@@ -513,15 +586,29 @@
     var run = el('master-run');
     if (run) run.addEventListener('click', runMaster);
     var input = el('master-input');
+    // Enter does NOT send — only the Run button does (avoids accidental send on paste).
     if (input) {
-      input.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runMaster(); }
+      input.addEventListener('paste', function (e) {
+        var cd = e.clipboardData || window.clipboardData;
+        if (!cd || !cd.items) return;
+        var imageItems = [];
+        for (var i = 0; i < cd.items.length; i++) {
+          if (cd.items[i].type && cd.items[i].type.indexOf('image/') === 0) imageItems.push(cd.items[i]);
+        }
+        if (!imageItems.length) return;
+        e.preventDefault();
+        Promise.all(imageItems.map(fileFromClipboardItem)).then(function (files) {
+          var real = files.filter(Boolean);
+          if (real.length) addFiles(real);
+        });
       });
     }
     var attach = el('master-attach');
     var fileInput = el('master-file-input');
     if (attach && fileInput) {
       fileInput.setAttribute('accept', 'image/*,image/jpeg,image/png,image/webp,image/gif,application/pdf,text/*,.md,.csv,.json,.txt');
+      fileInput.setAttribute('multiple', 'multiple');
+      fileInput.multiple = true;
       fileInput.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;';
       fileInput.classList.remove('hidden');
       fileInput.removeAttribute('capture');
@@ -531,13 +618,9 @@
         fileInput.click();
       });
       fileInput.addEventListener('change', function () {
-        var f = fileInput.files && fileInput.files[0];
-        if (!f) return;
-        attachedFile = f;
-        var name = el('master-attachment-name');
-        var box = el('master-attachment');
-        if (name) name.textContent = f.name;
-        if (box) box.classList.remove('hidden');
+        var list = fileInput.files;
+        if (!list || !list.length) return;
+        addFiles(list);
       });
     }
     var rem = el('master-attachment-remove');

@@ -1,11 +1,12 @@
 /* =========================================================================
- * api/image.js — Image generation: Hugging Face first, Prexzy backup
+ * api/image.js — Image generation: HF → Prexzy → Pexels stock
  *
  * POST /api/image
  * Body: { prompt, size? }
  *
  * Primary: black-forest-labs/FLUX.1-schnell (HF Inference API)
  * Backup:  Prexzy image endpoints (genimage → txt2img → dalle)
+ * Final:   Pexels stock search when generation fails (PEXELS_API_KEY)
  * ========================================================================= */
 
 const PREXZY_BASE = 'https://prexzyapis.com';
@@ -34,7 +35,6 @@ async function tryHF(prompt, hfToken) {
   const ctype = (res.headers.get('content-type') || '').toLowerCase();
   if (ctype.includes('application/json')) {
     const data = await res.json();
-    // Some HF responses return error JSON even with 200
     if (data.error) throw new Error(data.error);
     throw new Error('HF returned JSON instead of image');
   }
@@ -86,7 +86,6 @@ async function tryPrexzy(prompt, size) {
         lastErr = new Error('Prexzy empty body');
         continue;
       }
-      // Nested Prexzy shapes (DALL·E etc.)
       const url = extractImageUrl(data);
       if (url) {
         return { url, source: 'prexzy', endpoint: ep.path, raw: data };
@@ -173,8 +172,22 @@ module.exports = async function handler(req, res) {
     errors.push('Prexzy: ' + e.message);
   }
 
+  // 3) Pexels stock search (last resort — similar content, not generated)
+  try {
+    var pexels = require('./pexels');
+    if (pexels.hasPexels()) {
+      const stock = await pexels.searchPhotos(prompt, {});
+      res.status(200).json(stock);
+      return;
+    }
+    errors.push('Pexels: PEXELS_API_KEY not set');
+  } catch (e) {
+    console.warn('[Image] Pexels failed', e.message);
+    errors.push('Pexels: ' + e.message);
+  }
+
   res.status(502).json({
-    error: 'Image generation unavailable from HF and Prexzy.',
+    error: 'Image generation unavailable (HF → Prexzy → Pexels all failed).',
     detail: errors.join(' | ')
   });
 };

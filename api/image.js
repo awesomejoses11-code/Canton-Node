@@ -1,16 +1,33 @@
 /* =========================================================================
- * api/image.js — Image generation: HF → Prexzy → Pexels stock
+ * api/image.js — Image generation with ordered fallback
  *
  * POST /api/image
- * Body: { prompt, size? }
+ * Body: { prompt, size?, provider? }  provider: auto|huggingface|prexzy|pexels
  *
- * Primary: black-forest-labs/FLUX.1-schnell (HF Inference API)
- * Backup:  Prexzy image endpoints (genimage → txt2img → dalle)
- * Final:   Pexels stock search when generation fails (PEXELS_API_KEY)
+ * Default order: HF FLUX → Prexzy → Pexels stock
+ * User preference moves one provider first; the rest still run on failure.
  * ========================================================================= */
 
 const PREXZY_BASE = 'https://prexzyapis.com';
 const HF_IMAGE_MODEL = 'black-forest-labs/FLUX.1-schnell';
+const IMAGE_PROVIDER_IDS = ['huggingface', 'prexzy', 'pexels'];
+
+function normalizeImageProvider(raw) {
+  var p = String(raw || 'auto').toLowerCase().trim();
+  var alias = { hf: 'huggingface', flux: 'huggingface', stock: 'pexels', prexy: 'prexzy' };
+  if (alias[p]) p = alias[p];
+  if (p === 'auto' || !p) return 'auto';
+  return IMAGE_PROVIDER_IDS.indexOf(p) >= 0 ? p : 'auto';
+}
+
+function orderImageProviders(preferred) {
+  var chain = IMAGE_PROVIDER_IDS.slice();
+  var pref = normalizeImageProvider(preferred);
+  if (pref === 'auto') return chain;
+  var idx = chain.indexOf(pref);
+  if (idx > 0) { chain.splice(idx, 1); chain.unshift(pref); }
+  return chain;
+}
 
 async function tryHF(prompt, hfToken) {
   const res = await fetch(
@@ -146,49 +163,42 @@ module.exports = async function handler(req, res) {
   }
 
   const size = body.size || '1024x1024';
+  const preferred = normalizeImageProvider(body.provider || body.imageProvider || body.preferred);
   const errors = [];
+  const chain = orderImageProviders(preferred);
 
-  // 1) Hugging Face FLUX.1-schnell
-  const hfToken = process.env.HF_TOKEN;
-  if (hfToken) {
+  for (var ci = 0; ci < chain.length; ci++) {
+    var provider = chain[ci];
     try {
-      const result = await tryHF(prompt, hfToken);
-      res.status(200).json(result);
-      return;
+      if (provider === 'huggingface') {
+        var hfToken = process.env.HF_TOKEN;
+        if (!hfToken) { errors.push('HF: HF_TOKEN not set'); continue; }
+        var resultHf = await tryHF(prompt, hfToken);
+        res.status(200).json(Object.assign({}, resultHf, { preferred: preferred }));
+        return;
+      }
+      if (provider === 'prexzy') {
+        var resultPx = await tryPrexzy(prompt, size);
+        res.status(200).json(Object.assign({}, resultPx, { preferred: preferred }));
+        return;
+      }
+      if (provider === 'pexels') {
+        var pexels = require('./pexels');
+        if (!pexels.hasPexels()) { errors.push('Pexels: PEXELS_API_KEY not set'); continue; }
+        var stock = await pexels.searchPhotos(prompt, {});
+        res.status(200).json(Object.assign({}, stock, { preferred: preferred }));
+        return;
+      }
     } catch (e) {
-      console.warn('[Image] HF failed → Prexzy', e.message);
-      errors.push('HF: ' + e.message);
+      console.warn('[Image] ' + provider + ' failed', e.message);
+      errors.push(provider + ': ' + e.message);
     }
-  } else {
-    errors.push('HF: HF_TOKEN not set');
-  }
-
-  // 2) Prexzy backup
-  try {
-    const result = await tryPrexzy(prompt, size);
-    res.status(200).json(result);
-    return;
-  } catch (e) {
-    errors.push('Prexzy: ' + e.message);
-  }
-
-  // 3) Pexels stock search (last resort — similar content, not generated)
-  try {
-    var pexels = require('./pexels');
-    if (pexels.hasPexels()) {
-      const stock = await pexels.searchPhotos(prompt, {});
-      res.status(200).json(stock);
-      return;
-    }
-    errors.push('Pexels: PEXELS_API_KEY not set');
-  } catch (e) {
-    console.warn('[Image] Pexels failed', e.message);
-    errors.push('Pexels: ' + e.message);
   }
 
   res.status(502).json({
-    error: 'Image generation unavailable (HF → Prexzy → Pexels all failed).',
-    detail: errors.join(' | ')
+    error: 'Image generation unavailable (ordered: ' + chain.join(' → ') + ').',
+    detail: errors.join(' | '),
+    preferred: preferred
   });
 };
 

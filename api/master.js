@@ -1,4 +1,4 @@
-/* api/master.js — compact master (chat + vision + web search + memory) */
+/* api/master.js — compact master (chat + vision + web search + memory + browse) */
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const VINCI_URL = 'https://vinci.getsimpledirect.com/api/v1/chat/completions';
 const HF_URL = 'https://router.huggingface.co/v1/chat/completions';
@@ -102,11 +102,12 @@ function heuristicRoute(message, mcpTools) {
     return { agent_id: 'music', endpoint: 'music.aimelody', params: { prompt: message }, reasoning: 'Heuristic: music' };
   if (/\b(tts|speak|voice|text.to.speech)\b/.test(m))
     return { agent_id: 'tts', endpoint: 'tts.default', params: { text: message }, reasoning: 'Heuristic: TTS' };
-  if (/\b(browse|visit (this |the )?page|scrape|open (this |the )?url)\b/.test(m) || (/https?:\/\//.test(message) && /\b(browse|visit|open|scrape|read)\b/.test(m)))
+  // Browse only when a URL is present or user clearly asks to open a page
+  if ((/\b(browse|visit|scrape)\b/.test(m) && /https?:\/\//.test(message)) ||
+      (/https?:\/\//.test(message) && /\b(open (this |the )?url|read (this |the )?page|scrape)\b/.test(m)))
     return { agent_id: 'browse', endpoint: 'kernel.browse', params: { prompt: message }, reasoning: 'Heuristic: browse' };
   if (wantsWeb(message))
     return { agent_id: 'web', endpoint: 'web.search', params: { prompt: message, web: true }, reasoning: 'Heuristic: web search' };
-  // MCP only on explicit tool intent — not bare "mcp" (e.g. error help)
   if (mcpTools && mcpTools.length) {
     var isErrorHelp = /\b(401|403|invalid_token|oauth|how do i fix|error|failed|unauthorized)\b/i.test(m);
     var wantsMcpTool = /\b(use (my |the )?mcp|call (my |the )?mcp|run (my |the )?mcp|via mcp|mcp tool|invoke (the )?tool)\b/i.test(m);
@@ -132,10 +133,7 @@ async function duckDuckGoSearch(query) {
     var url = 'https://html.duckduckgo.com/html/?q=' + q;
     var resp = await fetch(url, {
       method: 'GET',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; CantonNode/1.0)',
-        Accept: 'text/html'
-      },
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; CantonNode/1.0)', Accept: 'text/html' },
       signal: AbortSignal.timeout(12000)
     });
     if (!resp.ok) return '';
@@ -148,9 +146,7 @@ async function duckDuckGoSearch(query) {
       var href = m[1];
       var title = m[2].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
       var uddg = href.match(/[?&]uddg=([^&]+)/);
-      if (uddg) {
-        try { href = decodeURIComponent(uddg[1]); } catch (_) {}
-      }
+      if (uddg) { try { href = decodeURIComponent(uddg[1]); } catch (_) {} }
       results.push({ title: title, url: href });
     }
     var snippets = [];
@@ -165,9 +161,7 @@ async function duckDuckGoSearch(query) {
       if (snippets[i]) lines.push('   ' + snippets[i].slice(0, 240));
     }
     return lines.join('\n');
-  } catch (_) {
-    return '';
-  }
+  } catch (_) { return ''; }
 }
 
 function buildChatSystemPrompt(prefs, memory, webMode) {
@@ -175,35 +169,23 @@ function buildChatSystemPrompt(prefs, memory, webMode) {
   var tone = (prefs && prefs.tone) ? String(prefs.tone) : 'friendly';
   var lines = [
     'You are the Canton Node Master Agent — a multi-tool assistant.',
-    'Capabilities you DO have in this product:',
-    '- Chat / reasoning / coding help',
-    '- Image, video, music, and TTS generation (client shows Execute when routed)',
-    '- File / image analysis (OCR, vision)',
-    '- Web search and page browse when the request needs live or online information',
-    '- MCP tools the user connected in Settings (only when explicitly requested)',
-    '- Silent persistent memory when enabled in Settings',
-    'Never claim you lack web search, browsing, or tools when this system is providing them.',
-    'If web search results are included in the user message, ground your answer in them and cite links in Markdown.',
-    'Always answer in clean standard Markdown (headings, short paragraphs, bullets when helpful).',
-    'Do not dump internal hashes, request IDs, or raw JSON unless the user asks.',
-    'If the user asks you to remember something lasting, acknowledge it and restate what you will keep in memory.',
-    'Finish complete answers — do not stop mid-sentence or mid-list.'
+    'Capabilities: chat, image/video/music/TTS, vision, web search, page browse, MCP tools when requested, silent memory.',
+    'Never claim you lack web search or tools when this system is providing them.',
+    'Answer in clean standard Markdown. Do not dump raw JSON unless asked.',
+    'Finish complete answers.'
   ];
-  if (webMode) {
-    lines.push('This turn requires up-to-date information. Use the provided search results; do not invent URLs or prices.');
-  }
+  if (webMode) lines.push('Use provided search results; do not invent URLs or prices.');
   if (name) lines.push('Address the user as "' + name.replace(/"/g, '') + '" when natural.');
   lines.push('Reply tone: ' + tone + '.');
   if (memory && memory.enabled) {
     if (memory.reference) {
-      lines.push('--- Agent reference (persistent memory) ---');
+      lines.push('--- Agent reference ---');
       lines.push(String(memory.reference).slice(0, 6000));
     }
     if (memory.user_logs) {
-      lines.push('--- User log / preferences (persistent memory) ---');
+      lines.push('--- User log ---');
       lines.push(String(memory.user_logs).slice(0, 6000));
     }
-    lines.push('Respect preferences and custom commands from the user log when relevant.');
   }
   return lines.join('\n');
 }
@@ -218,17 +200,13 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
   if (webMode) {
     var orKey = process.env.OPENROUTER_API_KEY;
     if (orKey) {
-      var orModels = [
-        'meta-llama/llama-3.3-70b-instruct:free',
-        'google/gemma-4-31b-it:free'
-      ];
+      var orModels = ['meta-llama/llama-3.3-70b-instruct:free', 'google/gemma-4-31b-it:free'];
       for (var oi = 0; oi < orModels.length; oi++) {
         try {
           var orBody = {
             model: orModels[oi],
-            messages: [
-              { role: 'system', content: buildChatSystemPrompt(prefs || {}, memory || null, true) }
-            ].concat(prior).concat([{ role: 'user', content: message }]),
+            messages: [{ role: 'system', content: buildChatSystemPrompt(prefs || {}, memory || null, true) }]
+              .concat(prior).concat([{ role: 'user', content: message }]),
             max_tokens: 2500,
             plugins: [{ id: 'web', max_results: 5 }]
           };
@@ -243,36 +221,18 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
             var orMsg = orData && orData.choices && orData.choices[0] && orData.choices[0].message;
             var orText = orMsg && typeof orMsg.content === 'string' ? orMsg.content.trim() : '';
             if (orText) {
-              return {
-                text: orText,
-                model: 'OR web · ' + orModels[oi].split('/')[1],
-                provider: 'openrouter',
-                attempts: attempts,
-                web: true
-              };
+              return { text: orText, model: 'OR web · ' + orModels[oi].split('/')[1], provider: 'openrouter', attempts: attempts, web: true };
             }
             attempts.push({ endpoint: orModels[oi] + '+web', error: 'empty' });
-          } else {
-            attempts.push({ endpoint: orModels[oi] + '+web', error: 'HTTP ' + orResp.status });
-          }
-        } catch (e) {
-          attempts.push({ endpoint: orModels[oi] + '+web', error: e.message });
-        }
+          } else attempts.push({ endpoint: orModels[oi] + '+web', error: 'HTTP ' + orResp.status });
+        } catch (e) { attempts.push({ endpoint: orModels[oi] + '+web', error: e.message }); }
       }
-    } else {
-      attempts.push({ endpoint: 'openrouter+web', error: 'key missing' });
-    }
+    } else attempts.push({ endpoint: 'openrouter+web', error: 'key missing' });
 
     var searchNote = await duckDuckGoSearch(message);
     if (searchNote) {
-      userContent =
-        message +
-        '\n\n---\n' +
-        searchNote +
-        '\n---\nUse the search results above. Cite links in Markdown. If results are thin, say what is missing.';
-    } else {
-      attempts.push({ endpoint: 'duckduckgo', error: 'no results' });
-    }
+      userContent = message + '\n\n---\n' + searchNote + '\n---\nUse the search results above. Cite links in Markdown.';
+    } else attempts.push({ endpoint: 'duckduckgo', error: 'no results' });
   }
 
   var system = buildChatSystemPrompt(prefs || {}, memory || null, webMode);
@@ -286,9 +246,7 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
       try {
         var messages = [{ role: 'system', content: system }].concat(prior).concat([{ role: 'user', content: userContent }]);
         var body = { model: m.model, messages: messages, max_tokens: webMode ? 2500 : 2000 };
-        if (webMode && provider.id === 'openrouter') {
-          body.plugins = [{ id: 'web', max_results: 5 }];
-        }
+        if (webMode && provider.id === 'openrouter') body.plugins = [{ id: 'web', max_results: 5 }];
         var resp = await fetch(provider.url, {
           method: 'POST',
           headers: authHeaders(provider, apiKey),
@@ -300,13 +258,7 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
         var msg = data && data.choices && data.choices[0] && data.choices[0].message;
         var text = msg && typeof msg.content === 'string' ? msg.content.trim() : '';
         if (text) {
-          return {
-            text: text,
-            model: m.label + (webMode ? ' · web' : ''),
-            provider: provider.id,
-            attempts: attempts,
-            web: webMode
-          };
+          return { text: text, model: m.label + (webMode ? ' · web' : ''), provider: provider.id, attempts: attempts, web: webMode };
         }
         attempts.push({ endpoint: m.model, error: 'empty' });
       } catch (e) { attempts.push({ endpoint: m.model, error: e.message }); }
@@ -358,18 +310,51 @@ module.exports = async function handler(req, res) {
     if (!route) route = { agent_id: 'chat', endpoint: 'chat.answer', params: { prompt: message }, reasoning: 'Default chat' };
     route.thinking = buildThinking(message, route);
 
-    if (route.agent_id === 'browse' && kernelLib && kernelLib.tryKernelBrowse) {
+    if (route.agent_id === 'browse') {
+      var tBrowse = Date.now();
       try {
-        var k = await kernelLib.tryKernelBrowse(message);
-        if (k && k.ok) {
-          res.status(200).json({
-            ok: true, agent_id: 'browse', endpoint: 'kernel.browse',
-            thinking: route.thinking, thinking_ms: 0,
-            server_executed: true, result: k.text || k.result, reasoning: route.reasoning
-          });
-          return;
+        if (kernelLib && kernelLib.tryKernelBrowse) {
+          var k = await kernelLib.tryKernelBrowse(message);
+          if (k && k.ok) {
+            res.status(200).json({
+              ok: true, agent_id: 'browse', endpoint: 'kernel.browse',
+              thinking: route.thinking, thinking_ms: Date.now() - tBrowse,
+              server_executed: true, result: k.text || k.result, reasoning: route.reasoning,
+              model_used: k.source || 'browse'
+            });
+            return;
+          }
+          if (k && k.error && /No URL found/i.test(k.error)) {
+            res.status(200).json({
+              ok: true, agent_id: 'chat', endpoint: 'chat.answer',
+              thinking: route.thinking, thinking_ms: Date.now() - tBrowse,
+              server_executed: true,
+              result: k.error + '\n\nExample: Browse https://docs.example.com/getting-started',
+              reasoning: 'Browse needs a URL'
+            });
+            return;
+          }
         }
-      } catch (_) {}
+      } catch (browseErr) {
+        console.error('[master browse]', browseErr);
+      }
+      var genBrowse = await tryGenerateAnswer(
+        message + '\n\n(Browse tool could not load the page. Summarize from web search if possible.)',
+        history, prefs, memory, { web: true }
+      );
+      res.status(200).json({
+        ok: true,
+        agent_id: 'web',
+        endpoint: 'web.search',
+        thinking: route.thinking,
+        thinking_ms: Date.now() - tBrowse,
+        server_executed: !!genBrowse.text,
+        result: genBrowse.text || 'Could not browse the page. Paste a full https:// URL and try again.',
+        model_used: genBrowse.model,
+        provider: genBrowse.provider,
+        reasoning: 'Browse fallback → web'
+      });
+      return;
     }
 
     if (route.agent_id === 'chat' || route.agent_id === 'web' || route.agent_id === 'analyze') {

@@ -2,11 +2,12 @@
  * api/video.js — Video generation with fallback chain
  *
  * Chain:
- *   1. MuAPI  (primary when MUAPI_API_KEY is set)
- *   2. Pixazo LTX
- *   3. Pyramid Flow / HF
- *   4. Prexzy
- *   5. Pexels stock video search (final, PEXELS_API_KEY)
+ *   1. CogVideoX-Flash (Z.ai / Zhipu — default when ZAI_API_KEY is set)
+ *   2. MuAPI
+ *   3. Pixazo LTX
+ *   4. Pyramid Flow / HF
+ *   5. Prexzy
+ *   6. Pexels stock video search (final, PEXELS_API_KEY)
  *
  * POST /api/video
  * Body: { prompt, duration?, resolution?, imageUrl?, poll?: true, model? }
@@ -55,6 +56,105 @@ async function pollMuapi(requestId, apiKey, {
       throw new Error('MuAPI polling timed out after ' + Math.round(timeoutMs / 1000) + 's');
     }
     await new Promise(function (r) { setTimeout(r, intervalMs); });
+  }
+}
+
+async function tryCogVideoX(prompt, options) {
+  const apiKey = process.env.ZAI_API_KEY || process.env.ZHIPU_API_KEY || process.env.BIGMODEL_API_KEY;
+  if (!apiKey) throw new Error('ZAI_API_KEY not set');
+
+  const model = options.cogModel || process.env.COGVIDEO_MODEL || 'cogvideox-flash';
+  const headers = {
+    Authorization: 'Bearer ' + apiKey,
+    'Content-Type': 'application/json'
+  };
+  const payload = { model: model, prompt: prompt };
+  if (options.imageUrl) {
+    payload.image_url = options.imageUrl;
+  }
+
+  const submitUrls = [
+    'https://open.bigmodel.cn/api/paas/v4/videos/generations',
+    'https://open.bigmodel.cn/api/paas/v4/video/generations'
+  ];
+
+  let data = null;
+  let lastErr = null;
+  for (const submitUrl of submitUrls) {
+    try {
+      const res = await fetch(submitUrl, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(30000)
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        lastErr = new Error('CogVideoX submit ' + res.status + ': ' + text.slice(0, 250));
+        continue;
+      }
+      data = await res.json();
+      break;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  if (!data) throw lastErr || new Error('CogVideoX submit failed');
+
+  const taskId = data.id || data.task_id || data.request_id;
+  if (!taskId) {
+    const direct = data.video_result && data.video_result[0] && data.video_result[0].url;
+    if (direct) {
+      return { url: direct, status: 'COMPLETED', source: 'cogvideox-flash', model: model, raw: data };
+    }
+    throw new Error('CogVideoX: no task id — ' + JSON.stringify(data).slice(0, 200));
+  }
+
+  if (options.poll === false) {
+    return { task_id: taskId, status: 'PENDING', source: 'cogvideox-flash', model: model };
+  }
+
+  const started = Date.now();
+  const timeoutMs = 5 * 60 * 1000;
+  const resultBase = 'https://open.bigmodel.cn/api/paas/v4/async-result/';
+
+  while (true) {
+    const poll = await fetch(resultBase + encodeURIComponent(taskId), {
+      method: 'GET',
+      headers: headers,
+      signal: AbortSignal.timeout(20000)
+    });
+    if (!poll.ok) {
+      const text = await poll.text();
+      throw new Error('CogVideoX poll ' + poll.status + ': ' + text.slice(0, 200));
+    }
+    const pd = await poll.json();
+    const status = String(pd.task_status || pd.status || '').toUpperCase();
+
+    if (status === 'SUCCESS' || status === 'COMPLETED' || status === 'SUCCEEDED') {
+      const list = pd.video_result || pd.video_results || [];
+      const url =
+        (list[0] && (list[0].url || list[0].video_url)) ||
+        pd.url ||
+        pd.video_url ||
+        null;
+      if (!url) throw new Error('CogVideoX SUCCESS but no video URL');
+      return {
+        url: url,
+        status: 'COMPLETED',
+        source: 'cogvideox-flash',
+        model: model,
+        task_id: taskId,
+        raw: pd
+      };
+    }
+    if (status === 'FAIL' || status === 'FAILED' || status === 'ERROR') {
+      throw new Error(pd.error || pd.message || ('CogVideoX ' + status));
+    }
+    if (Date.now() - started > timeoutMs) {
+      throw new Error('CogVideoX polling timed out after ' + Math.round(timeoutMs / 1000) + 's');
+    }
+    await new Promise(function (r) { setTimeout(r, 10000); });
   }
 }
 
@@ -251,6 +351,13 @@ async function generateVideoWithFallback(prompt, options) {
   const errors = [];
 
   try {
+    return await tryCogVideoX(prompt, opts);
+  } catch (err) {
+    console.warn('[Video] CogVideoX failed → MuAPI', err.message);
+    errors.push('CogVideoX: ' + err.message);
+  }
+
+  try {
     return await tryMuapi(prompt, opts);
   } catch (err) {
     console.warn('[Video] MuAPI failed → Pixazo', err.message);
@@ -277,7 +384,6 @@ async function generateVideoWithFallback(prompt, options) {
     errors.push('Prexzy: ' + err.message);
   }
 
-  // 5) Pexels stock video — similar clip when all generators fail
   try {
     var pexels = require('./pexels');
     if (pexels.hasPexels()) {

@@ -21,6 +21,10 @@
     routingMode:  'auto',
     /** Preferred chat provider: auto | zhipu | vinci | openrouter */
     llmProvider:  'auto',
+    /** Preferred image backend: auto | huggingface | prexzy | pexels */
+    imageProvider: 'auto',
+    /** Preferred video backend: auto | cogvideox | muapi | pixazo | pyramid | prexzy | pexels */
+    videoProvider: 'auto',
     confirmHeavy: true,
     compactCards: false,
     memoryEnabled: true
@@ -113,7 +117,6 @@
       pushToServer(settings);
     },
 
-    /** Pull Neon settings into local cache (call after login). */
     syncFromServer: async function (email) {
       var remote = await pullFromServer();
       if (!remote) return this.load(email);

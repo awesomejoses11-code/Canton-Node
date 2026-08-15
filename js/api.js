@@ -108,9 +108,7 @@
         throw new PrexzyError('http', 'HTTP ' + res.status + (errText ? ': ' + errText.slice(0, 200) : ''));
       }
       var ctype = (res.headers.get('content-type') || '').toLowerCase();
-      if (ctype.indexOf('application/json') >= 0) {
-        return await res.json();
-      }
+      if (ctype.indexOf('application/json') >= 0) return await res.json();
       if (ctype.indexOf('audio/') === 0 || ctype.indexOf('image/') === 0 || ctype.indexOf('video/') === 0) {
         var blob = await res.blob();
         return { url: URL.createObjectURL(blob), _binary: true, contentType: ctype };
@@ -123,12 +121,8 @@
       var chain = ALIASES[key] || [key];
       var lastErr = null;
       for (var i = 0; i < chain.length; i++) {
-        try {
-          return await PrexzyAPI.call(chain[i], params, opts);
-        } catch (e) {
-          lastErr = e;
-          if (e.kind === 'quota') throw e;
-        }
+        try { return await PrexzyAPI.call(chain[i], params, opts); }
+        catch (e) { lastErr = e; if (e.kind === 'quota') throw e; }
       }
       throw lastErr || new PrexzyError('unknown', 'All endpoints failed for ' + key);
     },
@@ -151,11 +145,8 @@
           throw new PrexzyError('http', data.error || ('Image HTTP ' + res.status));
         }
         return data;
-      } catch (e) {
-        throw e;
-      } finally {
-        if (loading) loading.clear();
-      }
+      } catch (e) { throw e; }
+      finally { if (loading) loading.clear(); }
     },
     generateVideo: async function (params, opts) {
       opts = opts || {};
@@ -181,31 +172,27 @@
         }
         if (loading) loading.setMessage('Almost done…');
         return data;
-      } catch (e) {
-        throw e;
-      } finally {
-        if (loading) loading.clear();
-      }
+      } catch (e) { throw e; }
+      finally { if (loading) loading.clear(); }
     },
-    /** Execute a Master route card (image / video / music / tts / code). */
     runRoute: async function (data, opts) {
       opts = opts || {};
       var agent = (data && (data.agent_id || data.agent)) || '';
       var params = (data && data.params) || {};
-      if (agent === 'image' || agent === 'html2image') {
-        return await PrexzyAPI.generateImage(params, opts);
-      }
-      if (agent === 'video') {
-        return await PrexzyAPI.generateVideo(params, opts);
-      }
-      if (agent === 'music') {
-        return await PrexzyAPI.callResilient(data.endpoint || 'music.aimelody', params, opts);
-      }
-      if (agent === 'tts') {
-        return await PrexzyAPI.callResilient(data.endpoint || 'tts.default', params, opts);
-      }
-      if (agent === 'code') {
-        return await PrexzyAPI.callResilient(data.endpoint || 'code.write', params, opts);
+      if (agent === 'image' || agent === 'html2image') return await PrexzyAPI.generateImage(params, opts);
+      if (agent === 'video') return await PrexzyAPI.generateVideo(params, opts);
+      if (agent === 'music') return await PrexzyAPI.callResilient(data.endpoint || 'music.aimelody', params, opts);
+      if (agent === 'tts') return await PrexzyAPI.callResilient(data.endpoint || 'tts.default', params, opts);
+      if (agent === 'code') return await PrexzyAPI.callResilient(data.endpoint || 'code.write', params, opts);
+      if (agent === 'browse') {
+        var bres = await fetch('/api/master', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ message: params.prompt || 'Browse the page', history: [], prefs: {} })
+        });
+        var bdata = await bres.json().catch(function () { return {}; });
+        if (!bres.ok) throw new PrexzyError('http', bdata.error || ('Browse HTTP ' + bres.status));
+        return { text: bdata.result || '', _browse: true };
       }
       if (data && data.endpoint && ENDPOINTS[data.endpoint]) {
         return await PrexzyAPI.callResilient(data.endpoint, params, opts);

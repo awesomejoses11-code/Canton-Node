@@ -19,6 +19,8 @@
     imageSize:    '1024x1024',
     ttsVoice:     'olivia',
     routingMode:  'auto',
+    /** Preferred chat provider: auto | zhipu | vinci | openrouter */
+    llmProvider:  'auto',
     confirmHeavy: true,
     compactCards: false,
     memoryEnabled: true

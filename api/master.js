@@ -84,6 +84,7 @@ function wantsWeb(message) {
   if (/\b(have you forgotten|can you search|use (your )?web|search (online|the net))\b/.test(m)) return true;
   if (/\b(dex|debank|gecko|coingecko|token (address|contract)|on[- ]chain)\b/.test(m)) return true;
   if (/\b(origin of|meme|what is this)\b/.test(m)) return true;
+  if (/\b(how do i fix|invalid_token|oauth)\b/.test(m)) return true;
   return false;
 }
 
@@ -93,6 +94,8 @@ function heuristicRoute(message, mcpTools) {
     return { agent_id: 'analyze', endpoint: 'vision.analyze', params: { prompt: message }, reasoning: 'Heuristic: vision/OCR' };
   if (/\b(video|clip|animation|footage|text.?to.?video)\b/.test(m))
     return { agent_id: 'video', endpoint: 'video.create', params: { prompt: message }, reasoning: 'Heuristic: video' };
+  if (/\b(search (for )?(images?|photos?|pictures?)|find (me )?(images?|photos?)|image search)\b/i.test(m))
+    return { agent_id: 'image', endpoint: 'image.genimage', params: { prompt: message, stock: true }, reasoning: 'Heuristic: image search' };
   if (/\b(image|logo|picture|photo|draw|illustration|txt2img|generate (an? )?image)\b/.test(m))
     return { agent_id: 'image', endpoint: 'image.genimage', params: { prompt: message }, reasoning: 'Heuristic: image' };
   if (/\b(music|song|melody|compose)\b/.test(m))
@@ -103,11 +106,21 @@ function heuristicRoute(message, mcpTools) {
     return { agent_id: 'browse', endpoint: 'kernel.browse', params: { prompt: message }, reasoning: 'Heuristic: browse' };
   if (wantsWeb(message))
     return { agent_id: 'web', endpoint: 'web.search', params: { prompt: message, web: true }, reasoning: 'Heuristic: web search' };
+  // MCP only on explicit tool intent — not bare "mcp" (e.g. error help)
   if (mcpTools && mcpTools.length) {
-    var wants = /\b(coingecko|mcp|price|crypto|bitcoin|btc|ethereum)\b/i.test(message);
-    if (wants) {
+    var isErrorHelp = /\b(401|403|invalid_token|oauth|how do i fix|error|failed|unauthorized)\b/i.test(m);
+    var wantsMcpTool = /\b(use (my |the )?mcp|call (my |the )?mcp|run (my |the )?mcp|via mcp|mcp tool|invoke (the )?tool)\b/i.test(m);
+    var wantsPrice = /\b(price of|how much is|what is .+ worth)\b/i.test(m) ||
+      (/\b(bitcoin|btc|ethereum|eth|solana|sol)\b/i.test(m) && /\b(price|worth|cost)\b/i.test(m)) ||
+      /\bcoingecko\b/i.test(m);
+    if (!isErrorHelp && (wantsMcpTool || wantsPrice)) {
       var pick = mcpTools.find(function (x) { return x.name === 'execute'; }) || mcpTools[0];
-      return { agent_id: 'mcp', endpoint: 'mcp.call', params: { serverId: pick.serverId, tool: pick.name }, reasoning: 'Heuristic: MCP' };
+      return {
+        agent_id: 'mcp',
+        endpoint: 'mcp.call',
+        params: { serverId: pick.serverId, tool: pick.name, prompt: message },
+        reasoning: wantsPrice ? 'Heuristic: crypto price via MCP' : 'Heuristic: explicit MCP tool'
+      };
     }
   }
   return null;
@@ -167,8 +180,8 @@ function buildChatSystemPrompt(prefs, memory, webMode) {
     '- Image, video, music, and TTS generation (client shows Execute when routed)',
     '- File / image analysis (OCR, vision)',
     '- Web search and page browse when the request needs live or online information',
-    '- MCP tools the user connected in Settings',
-    '- Persistent memory files (reference.md + user_logs.md) injected below when enabled',
+    '- MCP tools the user connected in Settings (only when explicitly requested)',
+    '- Silent persistent memory when enabled in Settings',
     'Never claim you lack web search, browsing, or tools when this system is providing them.',
     'If web search results are included in the user message, ground your answer in them and cite links in Markdown.',
     'Always answer in clean standard Markdown (headings, short paragraphs, bullets when helpful).',

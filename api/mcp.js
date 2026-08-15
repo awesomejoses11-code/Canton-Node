@@ -8,15 +8,6 @@
  *   1. POST initialize → read Mcp-Session-Id response header
  *   2. POST notifications/initialized (with session id)
  *   3. POST tools/list | tools/call (with session id)
- *
- * POST body:
- *   {
- *     "action": "listTools" | "callTool" | "ping",
- *     "url": "https://mcp.example.com/mcp",
- *     "headers": { "Authorization": "Bearer …" },   // optional
- *     "tool": "tool_name",                           // callTool only
- *     "arguments": { … }                             // callTool only
- *   }
  */
 
 const PROTOCOL_VERSION = '2024-11-05';
@@ -37,7 +28,6 @@ function isHttpsUrl(raw) {
   }
 }
 
-/** Strip trailing slash except for bare origin paths — CoinGecko 404s on /mcp/ */
 function normalizeMcpUrl(raw) {
   const u = new URL(String(raw).trim());
   if (u.pathname.length > 1 && u.pathname.endsWith('/')) {
@@ -76,7 +66,6 @@ function headerGet(headers, name) {
 function parseMcpBody(text) {
   const t = String(text || '').trim();
   if (!t) return {};
-  // Streamable HTTP may return plain JSON or SSE-framed JSON
   if (t.startsWith('data:') || t.includes('\ndata:')) {
     const lines = t.split('\n').filter((l) => l.startsWith('data:'));
     const last = lines[lines.length - 1] || '';
@@ -85,17 +74,24 @@ function parseMcpBody(text) {
   return JSON.parse(t);
 }
 
-/**
- * Low-level MCP JSON-RPC over Streamable HTTP.
- * Returns { result, sessionId, rawHeaders }.
- */
+function formatNetworkError(err) {
+  var base = err && err.message ? err.message : 'MCP request failed';
+  if (err && err.name === 'AbortError') return 'MCP request timed out';
+  if (err && err.cause && err.cause.message) base += ' (' + err.cause.message + ')';
+  if (/fetch failed|ENOTFOUND|ECONNREFUSED|certificate|network/i.test(base)) {
+    base +=
+      ' — This usually means the host is unreachable from the server, or the URL is not a Streamable HTTP MCP endpoint. ' +
+      'CoinGecko works as https://mcp.api.coingecko.com/mcp. Ordinary LLM gateways (OpenAI-style base URLs) are not MCP servers.';
+  }
+  return base;
+}
+
 async function mcpRpc(url, headers, method, params, id, sessionId) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   try {
     const payload = { jsonrpc: '2.0' };
-    // Notifications omit id
     if (id !== null && id !== undefined) payload.id = id;
     payload.method = method;
     if (params !== undefined) payload.params = params;
@@ -106,9 +102,7 @@ async function mcpRpc(url, headers, method, params, id, sessionId) {
       'MCP-Protocol-Version': PROTOCOL_VERSION,
       ...headers
     };
-    if (sessionId) {
-      reqHeaders['Mcp-Session-Id'] = sessionId;
-    }
+    if (sessionId) reqHeaders['Mcp-Session-Id'] = sessionId;
 
     const res = await fetch(url, {
       method: 'POST',
@@ -125,10 +119,9 @@ async function mcpRpc(url, headers, method, params, id, sessionId) {
       null;
 
     if (!res.ok) {
-      throw new Error(`MCP HTTP ${res.status}: ${text.slice(0, 300)}`);
+      throw new Error('MCP HTTP ' + res.status + ': ' + text.slice(0, 300));
     }
 
-    // notifications often return empty body / 202
     if (!text || !String(text).trim()) {
       return { result: null, sessionId: newSession };
     }
@@ -142,7 +135,7 @@ async function mcpRpc(url, headers, method, params, id, sessionId) {
 
     if (data.error) {
       const msg = data.error.message || JSON.stringify(data.error);
-      throw new Error(`MCP error: ${msg}`);
+      throw new Error('MCP error: ' + msg);
     }
 
     return { result: data.result, sessionId: newSession };
@@ -151,10 +144,6 @@ async function mcpRpc(url, headers, method, params, id, sessionId) {
   }
 }
 
-/**
- * Full session handshake for servers that require Mcp-Session-Id
- * (CoinGecko, many Streamable HTTP hosts).
- */
 async function openSession(url, headers) {
   const init = await mcpRpc(
     url,
@@ -171,11 +160,9 @@ async function openSession(url, headers) {
 
   const sessionId = init.sessionId;
   if (sessionId) {
-    // Spec: after InitializeResult, client sends notifications/initialized
     try {
       await mcpRpc(url, headers, 'notifications/initialized', {}, null, sessionId);
     } catch (err) {
-      // Some servers ignore this notification; don't fail the whole flow
       console.warn('[mcp] notifications/initialized:', err.message);
     }
   }
@@ -223,17 +210,8 @@ export default async function handler(req, res) {
 
     if (action === 'listTools') {
       const session = await openSession(url, headers);
-      const listed = await mcpRpc(
-        url,
-        headers,
-        'tools/list',
-        {},
-        1,
-        session.sessionId
-      );
-      const tools = Array.isArray(listed.result && listed.result.tools)
-        ? listed.result.tools
-        : [];
+      const listed = await mcpRpc(url, headers, 'tools/list', {}, 1, session.sessionId);
+      const tools = Array.isArray(listed.result && listed.result.tools) ? listed.result.tools : [];
       return json(res, 200, {
         ok: true,
         tools: tools.map((t) => ({
@@ -270,10 +248,7 @@ export default async function handler(req, res) {
     console.error('[mcp]', err);
     return json(res, 500, {
       ok: false,
-      error:
-        err.name === 'AbortError'
-          ? 'MCP request timed out'
-          : err.message || 'MCP request failed'
+      error: formatNetworkError(err)
     });
   }
 }

@@ -152,7 +152,6 @@
         }
         return data;
       } catch (e) {
-        if (e.kind !== 'quota' && global.Quota) { /* refund already handled on !ok */ }
         throw e;
       } finally {
         if (loading) loading.clear();
@@ -187,6 +186,31 @@
       } finally {
         if (loading) loading.clear();
       }
+    },
+    /** Execute a Master route card (image / video / music / tts / code). */
+    runRoute: async function (data, opts) {
+      opts = opts || {};
+      var agent = (data && (data.agent_id || data.agent)) || '';
+      var params = (data && data.params) || {};
+      if (agent === 'image' || agent === 'html2image') {
+        return await PrexzyAPI.generateImage(params, opts);
+      }
+      if (agent === 'video') {
+        return await PrexzyAPI.generateVideo(params, opts);
+      }
+      if (agent === 'music') {
+        return await PrexzyAPI.callResilient(data.endpoint || 'music.aimelody', params, opts);
+      }
+      if (agent === 'tts') {
+        return await PrexzyAPI.callResilient(data.endpoint || 'tts.default', params, opts);
+      }
+      if (agent === 'code') {
+        return await PrexzyAPI.callResilient(data.endpoint || 'code.write', params, opts);
+      }
+      if (data && data.endpoint && ENDPOINTS[data.endpoint]) {
+        return await PrexzyAPI.callResilient(data.endpoint, params, opts);
+      }
+      throw new PrexzyError('unknown', 'No executor for agent "' + agent + '"');
     }
   };
 

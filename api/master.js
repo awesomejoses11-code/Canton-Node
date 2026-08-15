@@ -7,6 +7,11 @@ var analyzeAttachment = require('../lib/analyze-attachment').analyzeAttachment;
 var kernelLib = null;
 try { kernelLib = require('../lib/kernel-lib'); } catch (_) { kernelLib = null; }
 
+/** Output budget: ~4x prior (2000/2500). Models may clamp to their own max. */
+const MAX_TOKENS_CHAT = 8000;
+const MAX_TOKENS_WEB = 10000;
+const HISTORY_MSG_CHARS = 4000;
+
 const LLM_CHAIN = [
   { id: 'zhipu', url: ZHIPU_URL, envKey: 'ZAI_API_KEY', altEnvKeys: ['ZHIPU_API_KEY', 'BIGMODEL_API_KEY'],
     models: [{ model: 'glm-5', label: 'GLM-5' }] },
@@ -172,7 +177,7 @@ function buildChatSystemPrompt(prefs, memory, webMode) {
     'Capabilities: chat, image/video/music/TTS, vision, web search, page browse, MCP tools when requested, silent memory.',
     'Never claim you lack web search or tools when this system is providing them.',
     'Answer in clean standard Markdown. Do not dump raw JSON unless asked.',
-    'Finish complete answers.'
+    'Finish complete answers. Never stop mid-sentence or mid-list; use the full output budget when the user needs depth.'
   ];
   if (webMode) lines.push('Use provided search results; do not invent URLs or prices.');
   if (name) lines.push('Address the user as "' + name.replace(/"/g, '') + '" when natural.');
@@ -207,14 +212,14 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
             model: orModels[oi],
             messages: [{ role: 'system', content: buildChatSystemPrompt(prefs || {}, memory || null, true) }]
               .concat(prior).concat([{ role: 'user', content: message }]),
-            max_tokens: 2500,
+            max_tokens: MAX_TOKENS_WEB,
             plugins: [{ id: 'web', max_results: 5 }]
           };
           var orResp = await fetch(OPENROUTER_URL, {
             method: 'POST',
             headers: authHeaders({ id: 'openrouter' }, orKey),
             body: JSON.stringify(orBody),
-            signal: AbortSignal.timeout(60000)
+            signal: AbortSignal.timeout(90000)
           });
           if (orResp.ok) {
             var orData = await orResp.json();
@@ -245,13 +250,13 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
       var m = provider.models[mi];
       try {
         var messages = [{ role: 'system', content: system }].concat(prior).concat([{ role: 'user', content: userContent }]);
-        var body = { model: m.model, messages: messages, max_tokens: webMode ? 2500 : 2000 };
+        var body = { model: m.model, messages: messages, max_tokens: webMode ? MAX_TOKENS_WEB : MAX_TOKENS_CHAT };
         if (webMode && provider.id === 'openrouter') body.plugins = [{ id: 'web', max_results: 5 }];
         var resp = await fetch(provider.url, {
           method: 'POST',
           headers: authHeaders(provider, apiKey),
           body: JSON.stringify(body),
-          signal: AbortSignal.timeout(webMode ? 60000 : 45000)
+          signal: AbortSignal.timeout(webMode ? 90000 : 60000)
         });
         if (!resp.ok) { attempts.push({ endpoint: m.model, error: 'HTTP ' + resp.status }); continue; }
         var data = await resp.json();
@@ -281,7 +286,7 @@ module.exports = async function handler(req, res) {
       history = body.history
         .filter(function (m) { return m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string'; })
         .slice(-12)
-        .map(function (m) { return { role: m.role, content: String(m.content).slice(0, 2000) }; });
+        .map(function (m) { return { role: m.role, content: String(m.content).slice(0, HISTORY_MSG_CHARS) }; });
     }
     if (!message && !(attachment && (attachment.dataUrl || attachment.text))) {
       res.status(400).json({ error: 'Missing "message" (or attach a file).' }); return;
@@ -389,4 +394,4 @@ module.exports = async function handler(req, res) {
   }
 };
 
-module.exports.config = { maxDuration: 60 };
+module.exports.config = { maxDuration: 90 };

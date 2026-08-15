@@ -21,9 +21,9 @@
     routingMode:  'auto',
     /** Preferred chat provider: auto | zhipu | vinci | openrouter */
     llmProvider:  'auto',
-    /** Preferred image backend: auto | huggingface | prexzy | pexels */
+    /** Selectable image backends only (Pexels is silent last-resort, not selectable) */
     imageProvider: 'auto',
-    /** Preferred video backend: auto | cogvideox | pixazo | pyramid | prexzy | pexels */
+    /** Selectable video backends only (Prexzy + Pexels are silent last-resort) */
     videoProvider: 'auto',
     confirmHeavy: true,
     compactCards: false,
@@ -46,8 +46,9 @@
     amber:   { 50: '255 251 235', 500: '245 158 11',  600: '217 119 6',   700: '180 83 9'   }
   });
 
-  const IMAGE_PROVIDERS = Object.freeze(['auto', 'huggingface', 'prexzy', 'pexels']);
-  const VIDEO_PROVIDERS = Object.freeze(['auto', 'cogvideox', 'pixazo', 'pyramid', 'prexzy', 'pexels']);
+  /** User-selectable only — last-resort backends are NOT listed here */
+  const IMAGE_PROVIDERS = Object.freeze(['auto', 'huggingface', 'prexzy']);
+  const VIDEO_PROVIDERS = Object.freeze(['auto', 'cogvideox', 'pixazo', 'pyramid']);
   const LLM_PROVIDERS = Object.freeze(['auto', 'zhipu', 'vinci', 'openrouter']);
 
   function key(email) { return PREFIX + '.' + String(email || 'anon').toLowerCase(); }
@@ -97,6 +98,7 @@
   }
 
   function clampProviders(s) {
+    // Drop last-resort-only values if user somehow saved them earlier
     if (s.imageProvider && IMAGE_PROVIDERS.indexOf(s.imageProvider) < 0) s.imageProvider = 'auto';
     if (s.videoProvider && VIDEO_PROVIDERS.indexOf(s.videoProvider) < 0) s.videoProvider = 'auto';
     if (s.llmProvider && LLM_PROVIDERS.indexOf(s.llmProvider) < 0) s.llmProvider = 'auto';

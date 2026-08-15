@@ -5,7 +5,8 @@
  *   1. MuAPI  (primary when MUAPI_API_KEY is set)
  *   2. Pixazo LTX
  *   3. Pyramid Flow / HF
- *   4. Prexzy (final)
+ *   4. Prexzy
+ *   5. Pexels stock video search (final, PEXELS_API_KEY)
  *
  * POST /api/video
  * Body: { prompt, duration?, resolution?, imageUrl?, poll?: true, model? }
@@ -274,6 +275,18 @@ async function generateVideoWithFallback(prompt, options) {
     return await tryPrexzy(prompt, opts);
   } catch (err) {
     errors.push('Prexzy: ' + err.message);
+  }
+
+  // 5) Pexels stock video — similar clip when all generators fail
+  try {
+    var pexels = require('./pexels');
+    if (pexels.hasPexels()) {
+      console.warn('[Video] generators failed → Pexels stock');
+      return await pexels.searchVideos(prompt, {});
+    }
+    errors.push('Pexels: PEXELS_API_KEY not set');
+  } catch (err) {
+    errors.push('Pexels: ' + err.message);
   }
 
   throw new Error('Video generation unavailable. ' + errors.join(' | '));

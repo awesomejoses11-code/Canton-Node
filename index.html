@@ -1,5 +1,27 @@
 <!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"/><title>Canton Node</title></head>
-<body><p>If you see this, full restore is still in progress. Video API is fixed. Settings.js is fixed. Please wait one more commit.</p></body>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Canton Node</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+  <script src="js/index-payload.js"></script>
+</head>
+<body>
+  <script>
+    (function () {
+      try {
+        var bin = atob(window.__INDEX_ZLIB_B64__);
+        var bytes = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        var html = pako.ungzip(bytes, { to: 'string' });
+        document.open();
+        document.write(html);
+        document.close();
+      } catch (e) {
+        document.body.textContent = 'Failed to load app: ' + e.message;
+      }
+    })();
+  </script>
+</body>
 </html>

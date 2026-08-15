@@ -13,7 +13,7 @@ const LLM_CHAIN = [
   { id: 'vinci', url: VINCI_URL, envKey: 'VINCI_API_KEY', models: [{ model: 'forte', label: 'Vinci Forte' }] },
   { id: 'openrouter', url: OPENROUTER_URL, envKey: 'OPENROUTER_API_KEY', models: [
     { model: 'meta-llama/llama-3.3-70b-instruct:free', label: 'OR Llama 3.3' },
-    { model: 'google/gemma-3-27b-it:free', label: 'OR Gemma 3' }
+    { model: 'google/gemma-4-31b-it:free', label: 'OR Gemma 4' }
   ]},
   { id: 'huggingface', url: HF_URL, envKey: 'HF_TOKEN', models: [
     { model: 'Qwen/Qwen2.5-7B-Instruct', label: 'HF Qwen2.5' }
@@ -29,7 +29,6 @@ function providerApiKey(provider) {
   return null;
 }
 
-/** Reorder LLM chain from user preference; always fall through if preferred fails. */
 function orderedLlmChain(prefs) {
   var preferred = String((prefs && (prefs.llmProvider || prefs.chatModel)) || 'auto').toLowerCase().trim();
   var alias = { glm: 'zhipu', 'glm-5': 'zhipu', zai: 'zhipu', bigmodel: 'zhipu', or: 'openrouter' };
@@ -84,6 +83,7 @@ function wantsWeb(message) {
   if (/\b(news|price of|stock|who is|what is happening|weather in)\b/.test(m)) return true;
   if (/\b(have you forgotten|can you search|use (your )?web|search (online|the net))\b/.test(m)) return true;
   if (/\b(dex|debank|gecko|coingecko|token (address|contract)|on[- ]chain)\b/.test(m)) return true;
+  if (/\b(origin of|meme|what is this)\b/.test(m)) return true;
   return false;
 }
 
@@ -201,14 +201,13 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
   var attempts = [];
   var prior = (history || []).slice(-8);
   var userContent = message;
-  var searchNote = '';
 
   if (webMode) {
     var orKey = process.env.OPENROUTER_API_KEY;
     if (orKey) {
       var orModels = [
         'meta-llama/llama-3.3-70b-instruct:free',
-        'google/gemma-3-27b-it:free'
+        'google/gemma-4-31b-it:free'
       ];
       for (var oi = 0; oi < orModels.length; oi++) {
         try {
@@ -218,8 +217,7 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
               { role: 'system', content: buildChatSystemPrompt(prefs || {}, memory || null, true) }
             ].concat(prior).concat([{ role: 'user', content: message }]),
             max_tokens: 2500,
-            plugins: [{ id: 'web', max_results: 5 }
-            ]
+            plugins: [{ id: 'web', max_results: 5 }]
           };
           var orResp = await fetch(OPENROUTER_URL, {
             method: 'POST',
@@ -252,7 +250,7 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
       attempts.push({ endpoint: 'openrouter+web', error: 'key missing' });
     }
 
-    searchNote = await duckDuckGoSearch(message);
+    var searchNote = await duckDuckGoSearch(message);
     if (searchNote) {
       userContent =
         message +
@@ -330,8 +328,8 @@ module.exports = async function handler(req, res) {
     }
     if (attachment && (attachment.dataUrl || attachment.text)) {
       var t0 = Date.now();
-      var analyzed = await analyzeAttachment(message, attachment, history, prefs, function (msg, hist, pr, mem) {
-        return tryGenerateAnswer(msg, hist, pr, mem, { web: false });
+      var analyzed = await analyzeAttachment(message, attachment, history, prefs, function (msg, hist, pr, mem, opts) {
+        return tryGenerateAnswer(msg, hist, pr, mem, opts || { web: false });
       });
       res.status(200).json({
         ok: true, agent_id: 'analyze', endpoint: 'vision.analyze',

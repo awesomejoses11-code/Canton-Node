@@ -58,35 +58,27 @@
       border-left: 3px solid rgb(148 163 184); padding-left: 0.75rem; margin: 0.5em 0; opacity: 0.9;
     }
   </style>
-
-  <!-- Vercel Web Analytics -->
   <script>
-    window.va = window.va || function () { 
-      (window.vaq = window.vaq || []).push(arguments); 
-    };
+    window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
   </script>
   <script defer src="/_vercel/insights/script.js"></script>
 </head>
 <body class="bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-100 min-h-screen flex flex-col">
-
   <div id="auth-view" class="flex-1 flex items-center justify-center p-4">
     <div class="w-full max-w-sm bg-white dark:bg-slate-800 rounded-2xl shadow-lg border border-slate-200 dark:border-slate-700 p-6">
       <h1 id="auth-title" class="text-xl font-display font-semibold text-center mb-4">Sign In</h1>
       <form id="auth-form" class="space-y-3">
         <div id="username-field" class="hidden">
           <label class="block text-xs font-medium mb-1">Username</label>
-          <input id="auth-username" type="text" autocomplete="username"
-                 class="w-full rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
+          <input id="auth-username" type="text" autocomplete="username" class="w-full rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
         </div>
         <div>
           <label class="block text-xs font-medium mb-1">Email</label>
-          <input id="auth-email" type="email" required autocomplete="email"
-                 class="w-full rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
+          <input id="auth-email" type="email" required autocomplete="email" class="w-full rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
         </div>
         <div>
           <label class="block text-xs font-medium mb-1">Password</label>
-          <input id="auth-password" type="password" required autocomplete="current-password"
-                 class="w-full rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
+          <input id="auth-password" type="password" required autocomplete="current-password" class="w-full rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
         </div>
         <label class="flex items-center gap-2 text-xs text-slate-500">
           <input id="auth-remember" type="checkbox" class="rounded border-slate-300 text-brand-600" /> Remember me
@@ -97,7 +89,6 @@
       <button id="auth-toggle" type="button" class="mt-3 w-full text-xs text-brand-600 dark:text-brand-500">Need an account? Register</button>
     </div>
   </div>
-
   <div id="app-view" class="hidden flex-1 flex flex-col min-h-screen">
     <header class="sticky top-0 z-30 bg-white/90 dark:bg-slate-900/90 backdrop-blur border-b border-slate-200 dark:border-slate-700">
       <div class="max-w-6xl mx-auto px-4 py-2 grid grid-cols-[auto_1fr_auto] items-center gap-2">
@@ -110,7 +101,6 @@
         <button id="btn-logout" class="text-xs px-3 py-1.5 rounded-lg text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-900 hover:bg-rose-50 dark:hover:bg-rose-950 font-medium">Logout</button>
       </div>
     </header>
-
     <div id="history-backdrop" class="hidden fixed inset-0 bg-black/30 z-40"></div>
     <aside id="history-drawer" class="fixed top-0 left-0 h-full w-72 max-w-[85vw] bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-700 z-50 -translate-x-full transition-transform p-4 flex flex-col gap-3">
       <div class="flex items-center justify-between">
@@ -120,7 +110,6 @@
       <button id="history-new-chat" type="button" class="text-xs rounded-lg bg-brand-600 text-white px-3 py-2 font-medium">+ New chat</button>
       <div id="history-list" class="flex-1 overflow-y-auto space-y-1"></div>
     </aside>
-
     <main class="max-w-6xl mx-auto px-4 py-6 flex-1 w-full">
       <div id="tab-content-models" class="tab-content space-y-4">
         <section class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 flex flex-col min-h-[60vh]">
@@ -142,16 +131,12 @@
             <div class="flex items-end gap-2">
               <button id="master-attach" type="button" class="p-2 text-slate-400 hover:text-brand-600" title="Attach">📎</button>
               <input id="master-file-input" type="file" class="hidden" accept="image/*,.pdf,.txt,.md,.csv,.json,.html,.htm,text/plain,application/pdf" />
-              <textarea id="master-input" rows="1" placeholder="e.g. Make a sunset image, then turn it into a short video…"
-                        class="flex-1 resize-none rounded-xl border border-slate-300 dark:border-slate-600 dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 max-h-[200px]"></textarea>
-              <button id="master-run" type="button"
-                      class="w-9 h-9 rounded-full bg-brand-600 text-white grid place-items-center hover:bg-brand-700 disabled:opacity-50"
-                      title="Run" aria-label="Run">↑</button>
+              <textarea id="master-input" rows="1" placeholder="e.g. Make a sunset image, then turn it into a short video…" class="flex-1 resize-none rounded-xl border border-slate-300 dark:border-slate-600 dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 max-h-[200px]"></textarea>
+              <button id="master-run" type="button" class="w-9 h-9 rounded-full bg-brand-600 text-white grid place-items-center hover:bg-brand-700 disabled:opacity-50" title="Run" aria-label="Run">↑</button>
             </div>
           </div>
         </section>
       </div>
-
       <div id="tab-content-limits" class="tab-content hidden space-y-6">
         <section class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-5">
           <div class="flex items-center justify-between mb-4">
@@ -164,7 +149,6 @@
           <div id="quota-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>
         </section>
       </div>
-
       <div id="tab-content-settings" class="tab-content hidden space-y-6">
         <section class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-5">
           <h2 class="text-base font-display font-semibold mb-1">User Customization</h2>
@@ -238,6 +222,16 @@
                 <option value="manual">Manual selection only</option>
               </select>
             </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Preferred chat model</label>
+              <select id="set-llm-provider" class="w-full rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+                <option value="auto">Auto (GLM-5 → Vinci → OpenRouter → HF)</option>
+                <option value="zhipu">GLM-5 (Z.ai / Zhipu)</option>
+                <option value="vinci">Vinci Forte</option>
+                <option value="openrouter">OpenRouter free</option>
+              </select>
+              <p class="mt-1 text-[10px] text-slate-400">If the preferred model is down, Master falls through the rest of the chain.</p>
+            </div>
             <div class="sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
               <label class="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400 select-none">
                 <input id="set-confirm-heavy" type="checkbox" class="rounded border-slate-300 text-brand-600 focus:ring-brand-500" />
@@ -254,15 +248,10 @@
             </div>
           </form>
         </section>
-
         <section class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-5">
           <div class="mb-3">
             <h2 class="text-base font-display font-semibold mb-1">Agent memory</h2>
-            <p class="text-xs text-slate-500 dark:text-slate-400">
-              Stored on Neon per account — available on any device after login.
-              <span class="font-mono text-[10px]">reference.md</span> is long-term knowledge;
-              <span class="font-mono text-[10px]">user_logs.md</span> holds preferences and custom commands.
-            </p>
+            <p class="text-xs text-slate-500 dark:text-slate-400">Stored on Neon per account. <span class="font-mono text-[10px]">reference.md</span> + <span class="font-mono text-[10px]">user_logs.md</span>.</p>
           </div>
           <label class="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400 select-none mb-3">
             <input id="set-memory-enabled" type="checkbox" class="rounded border-slate-300 text-brand-600 focus:ring-brand-500" checked />
@@ -274,28 +263,23 @@
                 <label class="text-xs font-medium">reference.md</label>
                 <button type="button" id="docs-save-reference" class="text-[11px] text-brand-600 hover:underline">Save</button>
               </div>
-              <textarea id="docs-reference" rows="10"
-                class="w-full rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-brand-500"
-                placeholder="# Agent reference…"></textarea>
+              <textarea id="docs-reference" rows="10" class="w-full rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-brand-500" placeholder="# Agent reference…"></textarea>
             </div>
             <div>
               <div class="flex items-center justify-between mb-1">
                 <label class="text-xs font-medium">user_logs.md</label>
                 <button type="button" id="docs-save-user-logs" class="text-[11px] text-brand-600 hover:underline">Save</button>
               </div>
-              <textarea id="docs-user-logs" rows="10"
-                class="w-full rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-brand-500"
-                placeholder="# User log…"></textarea>
+              <textarea id="docs-user-logs" rows="10" class="w-full rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-brand-500" placeholder="# User log…"></textarea>
             </div>
           </div>
           <p id="docs-status" class="mt-2 text-[11px] text-slate-500"></p>
         </section>
-
         <section class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-5">
           <div class="flex items-start justify-between gap-3 mb-4">
             <div>
               <h2 class="text-base font-display font-semibold mb-1">MCP Servers</h2>
-              <p class="text-xs text-slate-500 dark:text-slate-400">Connect remote Model Context Protocol endpoints (HTTPS). Tools become available to Master Agent.</p>
+              <p class="text-xs text-slate-500 dark:text-slate-400">Connect remote MCP endpoints (HTTPS).</p>
             </div>
             <button type="button" id="mcp-add-btn" class="shrink-0 rounded-lg bg-brand-600 text-white px-3 py-1.5 text-xs font-medium hover:bg-brand-700">+ Add</button>
           </div>
@@ -303,7 +287,7 @@
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label class="block text-xs font-medium mb-1">Name</label>
-                <input id="mcp-name" type="text" placeholder="e.g. GitHub tools" class="w-full rounded-lg border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
+                <input id="mcp-name" type="text" placeholder="e.g. GitHub tools" class="w-full rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
               </div>
               <div>
                 <label class="block text-xs font-medium mb-1">Server URL (HTTPS)</label>
@@ -322,16 +306,12 @@
             </div>
           </div>
           <div id="mcp-list" class="space-y-2"></div>
-          <p id="mcp-empty" class="text-xs text-slate-400 py-2">No MCP servers yet. Add a remote Streamable HTTP endpoint to expose external tools.</p>
+          <p id="mcp-empty" class="text-xs text-slate-400 py-2">No MCP servers yet.</p>
         </section>
       </div>
     </main>
-
-    <footer class="max-w-6xl mx-auto px-4 py-8 text-center text-xs text-slate-400">
-      Canton Node · private build · Master + MCP + Neon memory
-    </footer>
+    <footer class="max-w-6xl mx-auto px-4 py-8 text-center text-xs text-slate-400">Canton Node · Master + MCP + Neon memory · CogVideoX / GLM-5</footer>
   </div>
-
   <script src="js/quota.js"></script>
   <script src="js/auth.js"></script>
   <script src="js/settings.js"></script>
@@ -349,7 +329,7 @@
   <script src="js/master-client.js"></script>
   <script src="js/master-thinking.js"></script>
   <script>
-    const TAB_ACTIVE   = 'tab-btn px-3 py-1.5 rounded-lg bg-white dark:bg-slate-700 shadow-sm text-slate-800 dark:text-slate-100 font-semibold';
+    const TAB_ACTIVE = 'tab-btn px-3 py-1.5 rounded-lg bg-white dark:bg-slate-700 shadow-sm text-slate-800 dark:text-slate-100 font-semibold';
     const TAB_INACTIVE = 'tab-btn px-3 py-1.5 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-100';
     function switchTab(activeTab) {
       ['models', 'limits', 'settings'].forEach(tab => {
@@ -365,18 +345,14 @@
         if (window.loadDocsIntoSettings) loadDocsIntoSettings();
       }
     }
-    document.querySelectorAll('.tab-btn').forEach(btn =>
-      btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
-
+    document.querySelectorAll('.tab-btn').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
     let isSignUp = false;
     function toggleAuthMode() {
       isSignUp = !isSignUp;
-      const usernameField = document.getElementById('username-field');
-      const usernameInput = document.getElementById('auth-username');
       document.getElementById('auth-title').textContent = isSignUp ? 'Create Account' : 'Sign In';
       document.getElementById('auth-toggle').textContent = isSignUp ? 'Already have an account? Sign In' : 'Need an account? Register';
-      usernameField.classList.toggle('hidden', !isSignUp);
-      usernameInput.toggleAttribute('required', isSignUp);
+      document.getElementById('username-field').classList.toggle('hidden', !isSignUp);
+      document.getElementById('auth-username').toggleAttribute('required', isSignUp);
       showAuthError('');
     }
     document.getElementById('auth-toggle').addEventListener('click', toggleAuthMode);
@@ -386,14 +362,16 @@
       el.classList.toggle('hidden', !msg);
     }
     function populateSettingsForm(user, s) {
-      document.getElementById('set-display-name').value   = s.displayName || user.username;
-      document.getElementById('set-tone').value            = s.tone || 'friendly';
-      document.getElementById('set-theme').value           = s.theme;
-      document.getElementById('set-accent').value          = s.accent;
-      document.getElementById('set-code-lang').value       = s.codeLang;
-      document.getElementById('set-image-size').value      = s.imageSize;
-      document.getElementById('set-tts-voice').value       = s.ttsVoice;
-      document.getElementById('set-routing-mode').value    = s.routingMode;
+      document.getElementById('set-display-name').value = s.displayName || user.username;
+      document.getElementById('set-tone').value = s.tone || 'friendly';
+      document.getElementById('set-theme').value = s.theme;
+      document.getElementById('set-accent').value = s.accent;
+      document.getElementById('set-code-lang').value = s.codeLang;
+      document.getElementById('set-image-size').value = s.imageSize;
+      document.getElementById('set-tts-voice').value = s.ttsVoice;
+      document.getElementById('set-routing-mode').value = s.routingMode;
+      var llmEl = document.getElementById('set-llm-provider');
+      if (llmEl) llmEl.value = s.llmProvider || 'auto';
       document.getElementById('set-confirm-heavy').checked = s.confirmHeavy;
       document.getElementById('set-compact-cards').checked = s.compactCards;
       var memEl = document.getElementById('set-memory-enabled');
@@ -402,18 +380,9 @@
     }
     async function enterApp(user) {
       Quota.setScope(user.email);
-      // Pull server-side settings + chat history when a Neon token exists
       var settings = Settings.load(user.email);
-      try {
-        if (user.token && Settings.syncFromServer) {
-          settings = await Settings.syncFromServer(user.email);
-        }
-      } catch (_) {}
-      try {
-        if (user.token && window.History && History.syncFromServer) {
-          await History.syncFromServer(user.email);
-        }
-      } catch (_) {}
+      try { if (user.token && Settings.syncFromServer) settings = await Settings.syncFromServer(user.email); } catch (_) {}
+      try { if (user.token && window.History && History.syncFromServer) await History.syncFromServer(user.email); } catch (_) {}
       Settings.applyAll(settings);
       populateSettingsForm(user, settings);
       if (window.Hub && Hub.refresh) Hub.refresh();
@@ -425,225 +394,118 @@
     }
     document.getElementById('auth-form').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const email    = document.getElementById('auth-email').value.trim();
-      const password = document.getElementById('auth-password').value;
-      const remember = document.getElementById('auth-remember').checked;
       try {
         let user;
-        if (isSignUp) {
-          const username = document.getElementById('auth-username').value.trim();
-          user = await Auth.register(email, username, password, remember);
-        } else {
-          user = await Auth.login(email, password, remember);
-        }
+        if (isSignUp) user = await Auth.register(document.getElementById('auth-email').value.trim(), document.getElementById('auth-username').value.trim(), document.getElementById('auth-password').value, document.getElementById('auth-remember').checked);
+        else user = await Auth.login(document.getElementById('auth-email').value.trim(), document.getElementById('auth-password').value, document.getElementById('auth-remember').checked);
         await enterApp(user);
-      } catch (err) {
-        showAuthError(err.message);
-      }
+      } catch (err) { showAuthError(err.message); }
     });
     document.getElementById('btn-logout').addEventListener('click', () => {
-      Auth.logout();
-      Quota.setScope('anon');
+      Auth.logout(); Quota.setScope('anon');
       if (window.MasterChat) window.MasterChat.reset();
       document.getElementById('app-view').classList.add('hidden');
       document.getElementById('auth-view').classList.remove('hidden');
     });
     document.getElementById('settings-form').addEventListener('submit', (e) => {
       e.preventDefault();
-      const user = Auth.current();
-      if (!user) return;
+      const user = Auth.current(); if (!user) return;
       const s = {
-        displayName:   document.getElementById('set-display-name').value.trim(),
-        tone:          document.getElementById('set-tone').value,
-        theme:         document.getElementById('set-theme').value,
-        accent:        document.getElementById('set-accent').value,
-        codeLang:      document.getElementById('set-code-lang').value,
-        imageSize:     document.getElementById('set-image-size').value,
-        ttsVoice:      document.getElementById('set-tts-voice').value,
-        routingMode:   document.getElementById('set-routing-mode').value,
-        confirmHeavy:  document.getElementById('set-confirm-heavy').checked,
-        compactCards:  document.getElementById('set-compact-cards').checked,
-        memoryEnabled: document.getElementById('set-memory-enabled')
-          ? document.getElementById('set-memory-enabled').checked
-          : true
+        displayName: document.getElementById('set-display-name').value.trim(),
+        tone: document.getElementById('set-tone').value,
+        theme: document.getElementById('set-theme').value,
+        accent: document.getElementById('set-accent').value,
+        codeLang: document.getElementById('set-code-lang').value,
+        imageSize: document.getElementById('set-image-size').value,
+        ttsVoice: document.getElementById('set-tts-voice').value,
+        routingMode: document.getElementById('set-routing-mode').value,
+        llmProvider: document.getElementById('set-llm-provider') ? document.getElementById('set-llm-provider').value : 'auto',
+        confirmHeavy: document.getElementById('set-confirm-heavy').checked,
+        compactCards: document.getElementById('set-compact-cards').checked,
+        memoryEnabled: document.getElementById('set-memory-enabled') ? document.getElementById('set-memory-enabled').checked : true
       };
-      Settings.save(user.email, s);
-      Settings.applyAll(s);
+      Settings.save(user.email, s); Settings.applyAll(s);
       if (window.Hub && Hub.refresh) Hub.refresh();
-      const ok = document.getElementById('settings-saved');
-      ok.classList.remove('hidden');
-      setTimeout(() => ok.classList.add('hidden'), 2000);
+      const ok = document.getElementById('settings-saved'); ok.classList.remove('hidden'); setTimeout(() => ok.classList.add('hidden'), 2000);
     });
-
     async function loadDocsIntoSettings() {
       var status = document.getElementById('docs-status');
-      if (!window.DocsClient) {
-        if (status) status.textContent = 'Docs client not loaded.';
-        return;
-      }
+      if (!window.DocsClient) { if (status) status.textContent = 'Docs client not loaded.'; return; }
       if (status) status.textContent = 'Loading memory from Neon…';
       var res = await DocsClient.list();
-      if (!res.ok) {
-        if (status) status.textContent = res.error || 'Could not load docs (need Neon session).';
-        return;
-      }
-      var ref = document.getElementById('docs-reference');
-      var logs = document.getElementById('docs-user-logs');
-      if (ref) ref.value = res.docs.reference || '';
-      if (logs) logs.value = res.docs.user_logs || '';
+      if (!res.ok) { if (status) status.textContent = res.error || 'Could not load docs'; return; }
+      var ref = document.getElementById('docs-reference'); var logs = document.getElementById('docs-user-logs');
+      if (ref) ref.value = res.docs.reference || ''; if (logs) logs.value = res.docs.user_logs || '';
       if (status) status.textContent = 'Memory loaded from Neon.';
     }
     window.loadDocsIntoSettings = loadDocsIntoSettings;
-
     async function saveDocKey(key, textareaId) {
-      var status = document.getElementById('docs-status');
-      var ta = document.getElementById(textareaId);
+      var status = document.getElementById('docs-status'); var ta = document.getElementById(textareaId);
       if (!ta || !window.DocsClient) return;
       if (status) status.textContent = 'Saving ' + key + '…';
       var res = await DocsClient.save(key, ta.value);
-      if (status) {
-        status.textContent = res.ok ? ('Saved ' + key + ' to Neon.') : (res.error || 'Save failed');
-        status.className = res.ok
-          ? 'mt-2 text-[11px] text-emerald-600'
-          : 'mt-2 text-[11px] text-rose-500';
-      }
+      if (status) { status.textContent = res.ok ? ('Saved ' + key + ' to Neon.') : (res.error || 'Save failed'); status.className = res.ok ? 'mt-2 text-[11px] text-emerald-600' : 'mt-2 text-[11px] text-rose-500'; }
     }
-    var btnRef = document.getElementById('docs-save-reference');
-    if (btnRef) btnRef.addEventListener('click', function () { saveDocKey('reference', 'docs-reference'); });
-    var btnLogs = document.getElementById('docs-save-user-logs');
-    if (btnLogs) btnLogs.addEventListener('click', function () { saveDocKey('user_logs', 'docs-user-logs'); });
-
-    function mcpCurrentEmail() {
-      const u = Auth.current();
-      return u ? u.email : 'anon';
-    }
-
+    var btnRef = document.getElementById('docs-save-reference'); if (btnRef) btnRef.addEventListener('click', function () { saveDocKey('reference', 'docs-reference'); });
+    var btnLogs = document.getElementById('docs-save-user-logs'); if (btnLogs) btnLogs.addEventListener('click', function () { saveDocKey('user_logs', 'docs-user-logs'); });
+    function mcpCurrentEmail() { const u = Auth.current(); return u ? u.email : 'anon'; }
     function renderMcpList() {
       if (!window.MCPClient) return;
-      const listEl = document.getElementById('mcp-list');
-      const emptyEl = document.getElementById('mcp-empty');
+      const listEl = document.getElementById('mcp-list'); const emptyEl = document.getElementById('mcp-empty');
       const servers = MCPClient.listServers(mcpCurrentEmail());
-      listEl.innerHTML = '';
-      emptyEl.classList.toggle('hidden', servers.length > 0);
+      listEl.innerHTML = ''; emptyEl.classList.toggle('hidden', servers.length > 0);
       servers.forEach(function (s) {
         const card = document.createElement('div');
         card.className = 'flex flex-col sm:flex-row sm:items-center gap-2 p-3 rounded-xl border border-slate-200 dark:border-slate-600';
         const toolCount = (s.lastTools && s.lastTools.length) || 0;
-        card.innerHTML =
-          '<div class="flex-1 min-w-0">' +
-            '<div class="flex items-center gap-2">' +
-              '<span class="text-sm font-medium truncate">' + escapeHtml(s.name) + '</span>' +
-              (s.enabled
-                ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">on</span>'
-                : '<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-500">off</span>') +
-            '</div>' +
-            '<p class="text-[11px] text-slate-400 font-mono truncate">' + escapeHtml(s.url) + '</p>' +
-            (s.lastError
-              ? '<p class="text-[11px] text-rose-500 mt-0.5">' + escapeHtml(s.lastError) + '</p>'
-              : (toolCount ? '<p class="text-[11px] text-slate-500 mt-0.5">' + toolCount + ' tool(s) cached</p>' : '')) +
-          '</div>' +
-          '<div class="flex flex-wrap gap-1.5 shrink-0">' +
-            '<button type="button" data-mcp-action="toggle" data-id="' + s.id + '" class="text-xs px-2 py-1 rounded-lg border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-800">' + (s.enabled ? 'Disable' : 'Enable') + '</button>' +
-            '<button type="button" data-mcp-action="refresh" data-id="' + s.id + '" class="text-xs px-2 py-1 rounded-lg border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-800">Refresh tools</button>' +
-            '<button type="button" data-mcp-action="remove" data-id="' + s.id + '" class="text-xs px-2 py-1 rounded-lg border border-rose-200 dark:border-rose-900 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950">Remove</button>' +
-          '</div>';
+        card.innerHTML = '<div class="flex-1 min-w-0"><div class="flex items-center gap-2"><span class="text-sm font-medium truncate">' + escapeHtml(s.name) + '</span>' + (s.enabled ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700">on</span>' : '<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">off</span>') + '</div><p class="text-[11px] text-slate-400 font-mono truncate">' + escapeHtml(s.url) + '</p></div><div class="flex flex-wrap gap-1.5"><button type="button" data-mcp-action="toggle" data-id="' + s.id + '" class="text-xs px-2 py-1 rounded-lg border">' + (s.enabled ? 'Disable' : 'Enable') + '</button><button type="button" data-mcp-action="refresh" data-id="' + s.id + '" class="text-xs px-2 py-1 rounded-lg border">Refresh</button><button type="button" data-mcp-action="remove" data-id="' + s.id + '" class="text-xs px-2 py-1 rounded-lg border text-rose-600">Remove</button></div>';
         listEl.appendChild(card);
       });
       listEl.querySelectorAll('[data-mcp-action]').forEach(function (btn) {
         btn.addEventListener('click', async function () {
-          const id = btn.getAttribute('data-id');
-          const action = btn.getAttribute('data-mcp-action');
-          const email = mcpCurrentEmail();
+          const id = btn.getAttribute('data-id'); const action = btn.getAttribute('data-mcp-action'); const email = mcpCurrentEmail();
           if (action === 'remove') { MCPClient.removeServer(email, id); renderMcpList(); return; }
-          if (action === 'toggle') {
-            const s = MCPClient.listServers(email).find(function (x) { return x.id === id; });
-            if (s) MCPClient.updateServer(email, id, { enabled: !s.enabled });
-            renderMcpList(); return;
-          }
+          if (action === 'toggle') { const s = MCPClient.listServers(email).find(x => x.id === id); if (s) MCPClient.updateServer(email, id, { enabled: !s.enabled }); renderMcpList(); return; }
           if (action === 'refresh') {
             btn.disabled = true; btn.textContent = '…';
-            const s = MCPClient.listServers(email).find(function (x) { return x.id === id; });
-            if (s) {
-              const res = await MCPClient.listTools(s);
-              MCPClient.updateServer(email, id, {
-                lastTools: res.ok ? (res.tools || []) : [],
-                lastError: res.ok ? null : (res.error || 'Failed'),
-                lastChecked: new Date().toISOString()
-              });
-            }
+            const s = MCPClient.listServers(email).find(x => x.id === id);
+            if (s) { const res = await MCPClient.listTools(s); MCPClient.updateServer(email, id, { lastTools: res.ok ? (res.tools || []) : [], lastError: res.ok ? null : (res.error || 'Failed'), lastChecked: new Date().toISOString() }); }
             renderMcpList();
           }
         });
       });
     }
     window.renderMcpList = renderMcpList;
-
-    function escapeHtml(str) {
-      return String(str || '')
-        .replace(/&/g, '&')
-        .replace(/</g, '<')
-        .replace(/>/g, '>')
-        .replace(/"/g, '"');
-    }
-
+    function escapeHtml(str) { return String(str || '').replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>').replace(/"/g, '"'); }
     function mcpBuildHeaders() {
       const raw = document.getElementById('mcp-auth').value.trim();
       if (!raw) return {};
       if (/^bearer\s+/i.test(raw)) return { Authorization: raw };
       return { Authorization: 'Bearer ' + raw };
     }
-
-    document.getElementById('mcp-add-btn').addEventListener('click', function () {
-      document.getElementById('mcp-form').classList.remove('hidden');
-      document.getElementById('mcp-form-status').textContent = '';
-    });
-    document.getElementById('mcp-cancel-btn').addEventListener('click', function () {
-      document.getElementById('mcp-form').classList.add('hidden');
-      document.getElementById('mcp-name').value = '';
-      document.getElementById('mcp-url').value = '';
-      document.getElementById('mcp-auth').value = '';
-      document.getElementById('mcp-form-status').textContent = '';
-    });
+    document.getElementById('mcp-add-btn').addEventListener('click', function () { document.getElementById('mcp-form').classList.remove('hidden'); document.getElementById('mcp-form-status').textContent = ''; });
+    document.getElementById('mcp-cancel-btn').addEventListener('click', function () { document.getElementById('mcp-form').classList.add('hidden'); document.getElementById('mcp-name').value = ''; document.getElementById('mcp-url').value = ''; document.getElementById('mcp-auth').value = ''; });
     document.getElementById('mcp-test-btn').addEventListener('click', async function () {
-      const status = document.getElementById('mcp-form-status');
-      const url = document.getElementById('mcp-url').value.trim();
+      const status = document.getElementById('mcp-form-status'); const url = document.getElementById('mcp-url').value.trim();
       if (!url) { status.textContent = 'URL required'; status.className = 'text-xs text-rose-500'; return; }
-      status.textContent = 'Testing…'; status.className = 'text-xs text-slate-500';
-      const res = await MCPClient.testServer({ url: url, headers: mcpBuildHeaders() });
-      if (res.ok) {
-        status.textContent = 'OK — ' + (res.tools || []).length + ' tool(s)';
-        status.className = 'text-xs text-emerald-600';
-      } else {
-        status.textContent = res.error || 'Failed';
-        status.className = 'text-xs text-rose-500';
-      }
+      status.textContent = 'Testing…'; const res = await MCPClient.testServer({ url: url, headers: mcpBuildHeaders() });
+      status.textContent = res.ok ? ('OK — ' + (res.tools || []).length + ' tool(s)') : (res.error || 'Failed');
+      status.className = res.ok ? 'text-xs text-emerald-600' : 'text-xs text-rose-500';
     });
     document.getElementById('mcp-save-btn').addEventListener('click', async function () {
       const status = document.getElementById('mcp-form-status');
       const name = document.getElementById('mcp-name').value.trim() || 'MCP Server';
       const url = document.getElementById('mcp-url').value.trim();
       if (!url) { status.textContent = 'URL required'; status.className = 'text-xs text-rose-500'; return; }
-      status.textContent = 'Saving…'; status.className = 'text-xs text-slate-500';
       const headers = mcpBuildHeaders();
       const res = await MCPClient.testServer({ url: url, headers: headers });
-      MCPClient.addServer(mcpCurrentEmail(), {
-        name: name, url: url, headers: headers, enabled: true,
-        lastTools: res.ok ? (res.tools || []) : [],
-        lastError: res.ok ? null : (res.error || 'Could not list tools'),
-        lastChecked: new Date().toISOString()
-      });
+      MCPClient.addServer(mcpCurrentEmail(), { name: name, url: url, headers: headers, enabled: true, lastTools: res.ok ? (res.tools || []) : [], lastError: res.ok ? null : (res.error || 'Could not list tools'), lastChecked: new Date().toISOString() });
       document.getElementById('mcp-form').classList.add('hidden');
-      document.getElementById('mcp-name').value = '';
-      document.getElementById('mcp-url').value = '';
-      document.getElementById('mcp-auth').value = '';
-      status.textContent = '';
+      document.getElementById('mcp-name').value = ''; document.getElementById('mcp-url').value = ''; document.getElementById('mcp-auth').value = '';
       renderMcpList();
     });
-
     document.addEventListener('DOMContentLoaded', async () => {
-      try {
-        if (Auth.refresh) await Auth.refresh();
-      } catch (_) {}
+      try { if (Auth.refresh) await Auth.refresh(); } catch (_) {}
       const user = Auth.current();
       Settings.applyAll(Settings.load((user || {}).email));
       if (user) await enterApp(user);

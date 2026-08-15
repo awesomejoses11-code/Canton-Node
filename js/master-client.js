@@ -172,14 +172,16 @@
       var res = await DocsClient.get('user_logs');
       var existing = (res && res.ok && res.content) ? res.content : '';
       var stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
-      var note = '\n\n## Note (' + stamp + ')\n\n' + m.slice(0, 500) + '\n';
-      await DocsClient.save('user_logs', String(existing || '') + note);
+      var note = '\n\n## Preference (' + stamp + ')\n- ' + m.slice(0, 400) + '\n';
+      var next = String(existing || '') + note;
+      if (next.length > 12000) next = next.slice(-10000);
+      await DocsClient.save('user_logs', next);
     } catch (_) {}
   }
 
   async function maybeLogSessionDigest(userMessage, assistantText) {
     assistantReplyCount += 1;
-    if (assistantReplyCount % 5 !== 0) return;
+    if (assistantReplyCount % 8 !== 0) return;
     if (!window.DocsClient) return;
     var prefs = (window.Settings && email()) ? Settings.load(email()) : {};
     if (prefs.memoryEnabled === false) return;
@@ -187,13 +189,16 @@
       var res = await DocsClient.get('user_logs');
       var existing = (res && res.ok && res.content) ? res.content : '';
       var stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
-      var u = String(userMessage || '').replace(/\s+/g, ' ').trim().slice(0, 180);
-      var a = String(assistantText || '').replace(/\s+/g, ' ').trim().slice(0, 280);
-      var block =
-        '\n\n## Session log (' + stamp + ') — reply #' + assistantReplyCount + '\n\n' +
-        '- User: ' + u + '\n' +
-        '- Assistant: ' + a + '\n';
-      await DocsClient.save('user_logs', String(existing || '') + block);
+      var u = String(userMessage || '').replace(/\s+/g, ' ').trim();
+      var topic = u.slice(0, 80);
+      if (/\b(video|image|music|tts)\b/i.test(u)) topic = 'media: ' + topic;
+      else if (/\b(price|crypto|btc|eth)\b/i.test(u)) topic = 'crypto: ' + topic;
+      else if (/\b(code|bug|error|fix)\b/i.test(u)) topic = 'dev: ' + topic;
+      else topic = 'chat: ' + topic;
+      var block = '\n\n## ' + stamp + '\n- Topic: ' + topic + '\n- Turns since last note: 8\n';
+      var next = String(existing || '') + block;
+      if (next.length > 12000) next = next.slice(-10000);
+      await DocsClient.save('user_logs', next);
     } catch (_) {}
   }
 
@@ -235,10 +240,7 @@
         if (window.OutputActions) {
           if (OutputActions.enhanceCodeBlocks) OutputActions.enhanceCodeBlocks(ans);
           if (OutputActions.attachMessageActions) {
-            OutputActions.attachMessageActions(b, {
-              text: m.content || '',
-              userPrompt: lastUserPrompt
-            });
+            OutputActions.attachMessageActions(b, { text: m.content || '', userPrompt: lastUserPrompt });
           }
         }
       }
@@ -369,10 +371,7 @@
         if (window.OutputActions) {
           if (OutputActions.enhanceCodeBlocks) OutputActions.enhanceCodeBlocks(answer);
           if (OutputActions.attachMessageActions) {
-            OutputActions.attachMessageActions(assistantBox, {
-              text: data.result,
-              userPrompt: message
-            });
+            OutputActions.attachMessageActions(assistantBox, { text: data.result, userPrompt: message });
           }
         }
       } else {
@@ -397,18 +396,8 @@
           assistantBox.appendChild(actions);
         }
         if (window.OutputActions && OutputActions.attachMessageActions) {
-          OutputActions.attachMessageActions(assistantBox, {
-            text: preText(data),
-            userPrompt: message
-          });
+          OutputActions.attachMessageActions(assistantBox, { text: preText(data), userPrompt: message });
         }
-      }
-
-      if (data.fallback_note) {
-        var note = document.createElement('div');
-        note.className = 'mt-2 text-[11px] text-amber-600';
-        note.textContent = data.fallback_note;
-        assistantBox.appendChild(note);
       }
 
       if (window.History && em && currentSessionId) {
@@ -454,14 +443,61 @@
           area.textContent = typeof raw === 'string' ? raw : JSON.stringify(raw, null, 2);
         }
         box.appendChild(area);
-      } else if (window.PrexzyAPI) {
-        var r = await PrexzyAPI.runRoute(data);
+      } else if (window.PrexzyAPI && typeof PrexzyAPI.runRoute === 'function') {
+        var r = await PrexzyAPI.runRoute(data, { loadingEl: box });
         var a = document.createElement('div');
-        a.className = 'mt-2 text-sm';
-        renderMarkdownInto(a, typeof r === 'string' ? r : JSON.stringify(r, null, 2));
+        a.className = 'mt-2 text-sm space-y-2';
+        var url = r && (r.url || r.video_url || r.image_url);
+        if (url && data.agent_id === 'video') {
+          var vid = document.createElement('video');
+          vid.controls = true;
+          vid.playsInline = true;
+          vid.className = 'w-full rounded-lg max-h-80 bg-black';
+          vid.src = url;
+          a.appendChild(vid);
+          if (r.source) {
+            var cap = document.createElement('p');
+            cap.className = 'text-[11px] text-slate-400';
+            cap.textContent = 'Source: ' + r.source + (r.attribution ? ' · ' + r.attribution : '');
+            a.appendChild(cap);
+          }
+        } else if (url && (data.agent_id === 'image' || data.agent_id === 'html2image')) {
+          var img = document.createElement('img');
+          img.src = url;
+          img.alt = (data.params && data.params.prompt) || 'generated';
+          img.className = 'w-full rounded-lg max-h-96 object-contain';
+          a.appendChild(img);
+          if (r.source) {
+            var cap2 = document.createElement('p');
+            cap2.className = 'text-[11px] text-slate-400';
+            cap2.textContent = 'Source: ' + r.source + (r.attribution ? ' · ' + r.attribution : '');
+            a.appendChild(cap2);
+          }
+        } else if (typeof r === 'string') {
+          renderMarkdownInto(a, r);
+        } else if (r && r.url) {
+          a.innerHTML = '<a class="text-brand-600 underline" href="' + r.url + '" target="_blank" rel="noopener">Open result</a>';
+        } else {
+          renderMarkdownInto(a, '```json\n' + JSON.stringify(r, null, 2).slice(0, 2000) + '\n```');
+        }
         box.appendChild(a);
+      } else if (window.PrexzyAPI && typeof PrexzyAPI.generateVideo === 'function' && data.agent_id === 'video') {
+        var rv = await PrexzyAPI.generateVideo(data.params || {}, { loadingEl: box });
+        var av = document.createElement('div');
+        av.className = 'mt-2';
+        var uv = rv && (rv.url || rv.video_url);
+        if (uv) {
+          var v2 = document.createElement('video');
+          v2.controls = true; v2.playsInline = true;
+          v2.className = 'w-full rounded-lg max-h-80 bg-black';
+          v2.src = uv;
+          av.appendChild(v2);
+        } else {
+          av.textContent = JSON.stringify(rv);
+        }
+        box.appendChild(av);
       } else {
-        throw new Error('No executor for ' + data.agent_id);
+        throw new Error('PrexzyAPI.runRoute is not a function — hard-refresh to load the latest api.js');
       }
     } catch (e) {
       var err = document.createElement('div');

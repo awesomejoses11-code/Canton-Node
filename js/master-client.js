@@ -178,7 +178,7 @@
     return s;
   }
 
-  function renderMarkdownInto(el, text) {
+  function renderMarkdownInto(target, text) {
     var raw = String(text == null ? '' : text);
     raw = raw.replace(/^#{6,}\s*$/gm, '');
     var html = null;
@@ -192,16 +192,16 @@
       html = null;
     }
     if (!html) html = simpleMarkdownToHtml(raw);
-    el.classList.add('markdown-body');
+    target.classList.add('markdown-body');
     try {
       if (window.DOMPurify && typeof DOMPurify.sanitize === 'function') {
-        el.innerHTML = DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+        target.innerHTML = DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
       } else {
-        el.innerHTML = html;
+        target.innerHTML = html;
       }
     } catch (e2) {
       console.warn('[markdown] sanitize failed', e2);
-      el.innerHTML = html;
+      target.innerHTML = html;
     }
   }
 
@@ -334,7 +334,6 @@
     if (b) b.classList.add('hidden');
   }
 
-  /** Flat tool list for Master (names + schemas). */
   async function loadMcpTools() {
     var em = email();
     if (!window.MCPClient || !em) return [];
@@ -349,7 +348,6 @@
     } catch (e) { return []; }
   }
 
-  /** Server inventory always sent — even if tool listing fails — so Master can name your MCPs. */
   function loadMcpServers() {
     var em = email();
     if (!window.MCPClient || !em) return [];
@@ -359,9 +357,7 @@
         .slice(0, 20)
         .map(function (s) {
           return {
-            id: s.id,
-            name: s.name,
-            url: s.url,
+            id: s.id, name: s.name, url: s.url,
             enabled: s.enabled !== false,
             toolCount: (s.lastTools && s.lastTools.length) || 0,
             lastError: s.lastError || null
@@ -380,6 +376,53 @@
     return s.messages.slice(-12).map(function (m) {
       return { role: m.role, content: String(m.content || '').slice(0, 2000) };
     });
+  }
+
+  /** Read SSE from /api/master and invoke handlers. */
+  async function consumeSse(response, handlers) {
+    handlers = handlers || {};
+    var reader = response.body && response.body.getReader ? response.body.getReader() : null;
+    if (!reader) {
+      var t = await response.text();
+      throw new Error(t || 'Empty stream');
+    }
+    var decoder = new TextDecoder();
+    var buffer = '';
+    var eventName = 'message';
+    var dataLines = [];
+
+    function flushEvent() {
+      if (!dataLines.length) { eventName = 'message'; return; }
+      var dataStr = dataLines.join('\n');
+      dataLines = [];
+      var name = eventName;
+      eventName = 'message';
+      var payload = null;
+      try { payload = JSON.parse(dataStr); } catch (_) { payload = { raw: dataStr }; }
+      if (name === 'meta' && handlers.onMeta) handlers.onMeta(payload);
+      else if (name === 'delta' && handlers.onDelta) handlers.onDelta(payload);
+      else if (name === 'done' && handlers.onDone) handlers.onDone(payload);
+      else if (name === 'error' && handlers.onError) handlers.onError(payload);
+    }
+
+    while (true) {
+      var chunk = await reader.read();
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      var parts = buffer.split('\n');
+      buffer = parts.pop() || '';
+      for (var i = 0; i < parts.length; i++) {
+        var line = parts[i];
+        if (line === '') { flushEvent(); continue; }
+        if (line.charAt(0) === ':') continue;
+        if (line.indexOf('event:') === 0) {
+          eventName = line.slice(6).trim();
+        } else if (line.indexOf('data:') === 0) {
+          dataLines.push(line.slice(5).replace(/^ /, ''));
+        }
+      }
+    }
+    flushEvent();
   }
 
   async function runMaster() {
@@ -432,15 +475,16 @@
           textBits.push('--- ' + attachments[bi].name + ' ---\n' + attachments[bi].text);
         }
       }
-      if (textBits.length) {
-        message = message + '\n\n' + textBits.join('\n\n');
-      }
+      if (textBits.length) message = message + '\n\n' + textBits.join('\n\n');
       attachment = imageAtt || attachments[0] || null;
     } catch (attErr) {
       assistantBox.textContent = String(attErr && attErr.message ? attErr.message : attErr);
       if (runBtn) runBtn.disabled = false;
       return;
     }
+
+    // Streaming only for pure chat (no image attachment analysis)
+    var useStream = !attachment || attachment.kind !== 'image';
 
     var memory = await loadMemoryForRequest();
     var body = {
@@ -452,15 +496,93 @@
       mcp_tools: mcpTools,
       mcp_servers: mcpServers,
       attachment: attachment,
-      attachments: attachments
+      attachments: attachments,
+      stream: useStream
     };
 
     try {
       var res = await fetch('/api/master', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Accept: useStream ? 'text/event-stream, application/json' : 'application/json' },
         body: JSON.stringify(body)
       });
+
+      var ct = String(res.headers.get('content-type') || '').toLowerCase();
+      var isSse = ct.indexOf('text/event-stream') !== -1;
+
+      if (isSse) {
+        assistantBox.textContent = '';
+        var answer = document.createElement('div');
+        answer.className = 'text-slate-800 dark:text-slate-100 markdown-body';
+        assistantBox.appendChild(answer);
+
+        var accumulated = '';
+        var lastPaint = 0;
+        var meta = null;
+        var donePayload = null;
+
+        function paint(force) {
+          var now = Date.now();
+          if (!force && now - lastPaint < 48) return;
+          lastPaint = now;
+          // Progressive: plain text during stream for speed; full markdown on done
+          answer.textContent = accumulated;
+          var thread = el('master-thread');
+          if (thread) thread.scrollTop = thread.scrollHeight;
+        }
+
+        await consumeSse(res, {
+          onMeta: function (p) {
+            meta = p;
+            if (p && p.thinking && window.MasterThinking && MasterThinking.inject) {
+              MasterThinking.inject(assistantBox, p.thinking, null);
+            }
+          },
+          onDelta: function (p) {
+            if (p && typeof p.text === 'string') {
+              accumulated += p.text;
+              paint(false);
+            }
+          },
+          onDone: function (p) {
+            donePayload = p;
+            if (p && p.result) accumulated = p.result;
+            paint(true);
+            renderMarkdownInto(answer, accumulated);
+            if (window.OutputActions) {
+              if (OutputActions.enhanceCodeBlocks) OutputActions.enhanceCodeBlocks(answer);
+              if (OutputActions.attachMessageActions) {
+                OutputActions.attachMessageActions(assistantBox, { text: accumulated, userPrompt: message });
+              }
+            }
+          },
+          onError: function (p) {
+            var msg = (p && p.error) ? p.error : 'Stream error';
+            if (!accumulated) answer.textContent = msg;
+            else answer.textContent = accumulated + '\n\n[' + msg + ']';
+          }
+        });
+
+        if (!donePayload && accumulated) {
+          renderMarkdownInto(answer, accumulated);
+        }
+
+        var finalText = (donePayload && donePayload.result) || accumulated || '';
+        if (window.History && em && currentSessionId && finalText) {
+          History.appendMessage(em, currentSessionId, {
+            id: History.makeId(), role: 'assistant', kind: 'text',
+            content: finalText,
+            meta: donePayload || meta || {}, createdAt: Date.now()
+          });
+          renderHistoryList();
+        }
+        maybeAppendMemoryNote(message);
+        maybeLogSessionDigest(message, finalText);
+        clearAttachment();
+        return;
+      }
+
+      // JSON fallback (attachments / non-stream routes)
       var data = await res.json().catch(function () { return null; });
       if (!res.ok || !data) {
         assistantBox.textContent = (data && data.error) ? data.error : ('Request failed (' + res.status + ')');
@@ -474,12 +596,12 @@
       }
 
       if (data.server_executed && data.result) {
-        var answer = document.createElement('div');
-        answer.className = 'text-slate-800 dark:text-slate-100';
-        renderMarkdownInto(answer, data.result);
-        assistantBox.appendChild(answer);
+        var ans2 = document.createElement('div');
+        ans2.className = 'text-slate-800 dark:text-slate-100';
+        renderMarkdownInto(ans2, data.result);
+        assistantBox.appendChild(ans2);
         if (window.OutputActions) {
-          if (OutputActions.enhanceCodeBlocks) OutputActions.enhanceCodeBlocks(answer);
+          if (OutputActions.enhanceCodeBlocks) OutputActions.enhanceCodeBlocks(ans2);
           if (OutputActions.attachMessageActions) {
             OutputActions.attachMessageActions(assistantBox, { text: data.result, userPrompt: message });
           }
@@ -560,29 +682,16 @@
         var url = r && (r.url || r.video_url || r.image_url);
         if (url && data.agent_id === 'video') {
           var vid = document.createElement('video');
-          vid.controls = true;
-          vid.playsInline = true;
+          vid.controls = true; vid.playsInline = true;
           vid.className = 'w-full rounded-lg max-h-80 bg-black';
           vid.src = url;
           a.appendChild(vid);
-          if (r.source) {
-            var cap = document.createElement('p');
-            cap.className = 'text-[11px] text-slate-400';
-            cap.textContent = 'Source: ' + r.source + (r.attribution ? ' · ' + r.attribution : '');
-            a.appendChild(cap);
-          }
         } else if (url && (data.agent_id === 'image' || data.agent_id === 'html2image')) {
           var img = document.createElement('img');
           img.src = url;
           img.alt = (data.params && data.params.prompt) || 'generated';
           img.className = 'w-full rounded-lg max-h-96 object-contain';
           a.appendChild(img);
-          if (r.source) {
-            var cap2 = document.createElement('p');
-            cap2.className = 'text-[11px] text-slate-400';
-            cap2.textContent = 'Source: ' + r.source + (r.attribution ? ' · ' + r.attribution : '');
-            a.appendChild(cap2);
-          }
         } else if (typeof r === 'string') {
           renderMarkdownInto(a, r);
         } else if (r && r.url) {
@@ -591,21 +700,6 @@
           renderMarkdownInto(a, '```json\n' + JSON.stringify(r, null, 2).slice(0, 2000) + '\n```');
         }
         box.appendChild(a);
-      } else if (window.PrexzyAPI && typeof PrexzyAPI.generateVideo === 'function' && data.agent_id === 'video') {
-        var rv = await PrexzyAPI.generateVideo(data.params || {}, { loadingEl: box });
-        var av = document.createElement('div');
-        av.className = 'mt-2';
-        var uv = rv && (rv.url || rv.video_url);
-        if (uv) {
-          var v2 = document.createElement('video');
-          v2.controls = true; v2.playsInline = true;
-          v2.className = 'w-full rounded-lg max-h-80 bg-black';
-          v2.src = uv;
-          av.appendChild(v2);
-        } else {
-          av.textContent = JSON.stringify(rv);
-        }
-        box.appendChild(av);
       } else {
         throw new Error('PrexzyAPI.runRoute is not a function — hard-refresh to load the latest api.js');
       }
@@ -623,7 +717,6 @@
     var run = el('master-run');
     if (run) run.addEventListener('click', runMaster);
     var input = el('master-input');
-    // Enter does NOT send — only the Run button does (avoids accidental send on paste).
     if (input) {
       input.addEventListener('paste', function (e) {
         var cd = e.clipboardData || window.clipboardData;

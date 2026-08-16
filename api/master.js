@@ -1,4 +1,4 @@
-/* api/master.js — re-export core (anti-truncation + file-edit rules live in lib/master-core.js) */
+/* api/master.js — entry */
 var core = require('../lib/master-core.js');
 module.exports = core;
-if (core.config) module.exports.config = core.config;
+module.exports.config = (core && core.config) || { maxDuration: 120 };

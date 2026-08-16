@@ -209,7 +209,6 @@ function heuristicRoute(message, mcpTools) {
     return { agent_id: 'browse', endpoint: 'kernel.browse', params: { prompt: message }, reasoning: 'Heuristic: browse' };
   if (wantsWeb(message))
     return { agent_id: 'web', endpoint: 'web.search', params: { prompt: message, web: true }, reasoning: 'Heuristic: web' };
-  // MCP list / tool questions stay on chat — inventory is injected into the prompt
   if (wantsMcpList(message))
     return { agent_id: 'chat', endpoint: 'chat.answer', params: { prompt: message }, reasoning: 'Heuristic: MCP inventory' };
   return null;
@@ -288,7 +287,8 @@ function buildChatSystemPrompt(prefs, memory, webMode, codeMode, editMode, mcpSe
     lines.push(
       'FILE EDIT (mandatory): Apply the requested edits. Returning the original unchanged is a failure.',
       'Output the COMPLETE modified file in one fenced code block, then short bullets of what changed.'
-     }
+    );
+  }
   if (webMode) {
     lines.push('Use provided search results and any live page extracts; do not invent URLs or prices.');
     lines.push('Prefer live page extracts over thin SERP snippets when both are present.');
@@ -424,7 +424,6 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
     }
   }
 
-  // Always remind model of MCP inventory on MCP-related questions
   if (wantsMcpList(message) || mcpServers.length || mcpTools.length) {
     userContent +=
       '\n\n---\nMCP INVENTORY (answer from this; do not deny visibility):\n' +
@@ -488,7 +487,6 @@ module.exports = async function handler(req, res) {
     var token = String(body.token || '').trim();
     var mcpTools = normalizeMcpTools(body.mcp_tools);
     var mcpServers = normalizeMcpServers(body.mcp_servers);
-    // Derive servers from tools if client only sent tools
     if (!mcpServers.length && mcpTools.length) {
       var seen = {};
       mcpTools.forEach(function (t) {
@@ -533,7 +531,7 @@ module.exports = async function handler(req, res) {
     if (attachment && (attachment.dataUrl || attachment.text)) {
       var t0 = Date.now();
       var analyzed = await analyzeAttachment(message, attachment, history, prefs, function (msg, hist, pr, mem, opts) {
-        return tryGenerateAnswer(msg, hist, pr, mem || memory, opts || { web: false, mcpServers: mcpServers, mcpTools: mcpTools });
+        return tryGenerateAnswer(msg, hist, pr, mem || memory, opts || { web:: false, mcpServers: mcpServers, mcpTools: mcpTools });
       });
       res.status(200).json({
         ok: true, agent_id: 'analyze', endpoint: 'vision.analyze',

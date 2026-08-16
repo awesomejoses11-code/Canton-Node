@@ -141,18 +141,28 @@
 })(window);
 
 (function () {
-  if (document.querySelector('link[rel="icon"]')) return;
-  var head = document.head;
-  function add(tag, attrs) {
-    var el = document.createElement(tag);
-    Object.keys(attrs).forEach(function (k) { el.setAttribute(k, attrs[k]); });
-    head.appendChild(el);
+  if (!document.querySelector('link[rel="icon"]')) {
+    var head = document.head;
+    function add(tag, attrs) {
+      var el = document.createElement(tag);
+      Object.keys(attrs).forEach(function (k) { el.setAttribute(k, attrs[k]); });
+      head.appendChild(el);
+    }
+    add('link', { rel: 'icon', href: '/favicon.svg', type: 'image/svg+xml' });
+    add('link', { rel: 'apple-touch-icon', href: '/favicon.svg' });
+    add('meta', { property: 'og:title', content: 'Canton Node' });
+    add('meta', { property: 'og:description', content: 'Private multi-tool generative hub' });
+    add('meta', { property: 'og:image', content: 'https://canton-node.vercel.app/og-image.png' });
+    add('meta', { name: 'twitter:card', content: 'summary_large_image' });
+    add('meta', { name: 'twitter:image', content: 'https://canton-node.vercel.app/og-image.png' });
   }
-  add('link', { rel: 'icon', href: '/favicon.svg', type: 'image/svg+xml' });
-  add('link', { rel: 'apple-touch-icon', href: '/favicon.svg' });
-  add('meta', { property: 'og:title', content: 'Canton Node' });
-  add('meta', { property: 'og:description', content: 'Private multi-tool generative hub' });
-  add('meta', { property: 'og:image', content: 'https://canton-node.vercel.app/og-image.png' });
-  add('meta', { name: 'twitter:card', content: 'summary_large_image' });
-  add('meta', { name: 'twitter:image', content: 'https://canton-node.vercel.app/og-image.png' });
+
+  // Table-safe markdown: keep comparison tables inside the chat bubble
+  if (!document.querySelector('script[data-cn="md-tables"]')) {
+    var s = document.createElement('script');
+    s.src = '/js/md-tables.js';
+    s.defer = true;
+    s.setAttribute('data-cn', 'md-tables');
+    document.head.appendChild(s);
+  }
 })();

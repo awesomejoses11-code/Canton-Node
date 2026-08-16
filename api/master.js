@@ -1,5 +1,5 @@
-/* api/master.js — chat + attachment + file-edit + vector memory + stealth web
- * Hard rule: never role-play "I have no tools / cannot search".
+/* api/master.js — chat + attachment + file-edit + vector memory + stealth web + MCP awareness
+ * Hard rule: never role-play "I have no tools / cannot search / cannot see MCPs".
  */
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const VINCI_URL = 'https://vinci.getsimpledirect.com/api/v1/chat/completions';
@@ -71,20 +71,72 @@ function authHeaders(provider, apiKey) {
 
 function normalizeMcpTools(raw) {
   if (!Array.isArray(raw)) return [];
-  return raw.slice(0, 40).map(function (t) {
+  return raw.slice(0, 60).map(function (t) {
     return {
       qualified: t.qualified || ((t.serverName || t.serverId || '') + '.' + (t.name || '')),
-      serverId: t.serverId, serverName: t.serverName, name: t.name,
+      serverId: t.serverId,
+      serverName: t.serverName,
+      name: t.name,
       description: String(t.description || '').slice(0, 200)
     };
   }).filter(function (t) { return t.name; });
+}
+
+function normalizeMcpServers(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 20).map(function (s) {
+    return {
+      id: s.id || '',
+      name: String(s.name || 'MCP').slice(0, 80),
+      url: String(s.url || '').slice(0, 240),
+      enabled: s.enabled !== false,
+      toolCount: typeof s.toolCount === 'number' ? s.toolCount : (Array.isArray(s.lastTools) ? s.lastTools.length : 0),
+      lastError: s.lastError ? String(s.lastError).slice(0, 120) : null
+    };
+  }).filter(function (s) { return s.name || s.url; });
+}
+
+function formatMcpInventory(mcpServers, mcpTools) {
+  var servers = mcpServers || [];
+  var tools = mcpTools || [];
+  if (!servers.length && !tools.length) {
+    return 'No MCP servers were sent with this request (user has none connected, or client did not attach inventory).';
+  }
+  var lines = [];
+  if (servers.length) {
+    lines.push('Connected MCP servers (' + servers.length + '):');
+    servers.forEach(function (s, i) {
+      lines.push(
+        (i + 1) + '. **' + s.name + '**' +
+        (s.url ? ' — `' + s.url + '`' : '') +
+        (s.enabled === false ? ' (disabled)' : '') +
+        (s.toolCount ? ' · ~' + s.toolCount + ' tools cached' : '') +
+        (s.lastError ? ' · last error: ' + s.lastError : '')
+      );
+    });
+  }
+  if (tools.length) {
+    lines.push('Available MCP tools this turn (' + tools.length + '):');
+    var byServer = {};
+    tools.forEach(function (t) {
+      var key = t.serverName || t.serverId || 'server';
+      if (!byServer[key]) byServer[key] = [];
+      byServer[key].push(t.name + (t.description ? ' — ' + t.description.slice(0, 80) : ''));
+    });
+    Object.keys(byServer).forEach(function (sn) {
+      lines.push('### ' + sn);
+      byServer[sn].slice(0, 15).forEach(function (row) { lines.push('- ' + row); });
+      if (byServer[sn].length > 15) lines.push('- … +' + (byServer[sn].length - 15) + ' more');
+    });
+  }
+  return lines.join('\n');
 }
 
 function buildThinking(message, route) {
   return [
     '1. Understood: "' + String(message || '').replace(/\s+/g, ' ').trim().slice(0, 120) + '"',
     '2. Route → ' + (route && route.agent_id ? route.agent_id : 'chat'),
-    '3. Deliver a complete, non-truncated final answer. Never claim missing tools.'
+    '3. Deliver a complete, non-truncated final answer. Never claim missing tools or invisible MCPs.'
   ].join('\n');
 }
 
@@ -96,6 +148,11 @@ function wantsWeb(message) {
 function wantsDeepWeb(message) {
   var m = String(message || '').toLowerCase();
   return /\b(deep search|deep research|read (the )?page|full (page|article)|browse (the )?results?|stealth|kernel mcp)\b/.test(m);
+}
+
+function wantsMcpList(message) {
+  var m = String(message || '').toLowerCase();
+  return /\b(mcp|connected (mcp|servers?|tools?)|my (mcp|servers?|tools?)|list (my )?mcp|what mcp|which mcp|view (the )?mcp|see (the )?mcp)\b/.test(m);
 }
 
 function isCodeTask(message) {
@@ -115,11 +172,12 @@ function looksTruncated(text, finishReason) {
   return ((s.match(/```/g) || []).length % 2 === 1);
 }
 
-/** Strip model habit of denying platform capabilities. */
 function sanitizeCapabilityDenial(text) {
   var s = String(text || '');
   var patterns = [
     /I (don'?t|do not|cannot|can'?t) have access to (any )?(MCP|web search|browse|external tools?)[^.\n]*[.\n]/gi,
+    /I (can'?t|cannot) see your connected MCPs[^.\n]*[.\n]/gi,
+    /I don'?t have a view into your platform'?s MCP[^.\n]*[.\n]/gi,
     /I have no (external )?tools?[^.\n]*[.\n]/gi,
     /no tool calls are wired[^.\n]*[.\n]/gi,
     /I can'?t call the Kernel MCP[^.\n]*[.\n]/gi,
@@ -151,10 +209,12 @@ function heuristicRoute(message, mcpTools) {
     return { agent_id: 'browse', endpoint: 'kernel.browse', params: { prompt: message }, reasoning: 'Heuristic: browse' };
   if (wantsWeb(message))
     return { agent_id: 'web', endpoint: 'web.search', params: { prompt: message, web: true }, reasoning: 'Heuristic: web' };
+  // MCP list / tool questions stay on chat — inventory is injected into the prompt
+  if (wantsMcpList(message))
+    return { agent_id: 'chat', endpoint: 'chat.answer', params: { prompt: message }, reasoning: 'Heuristic: MCP inventory' };
   return null;
 }
 
-/** @returns {{ note: string, urls: string[] }} */
 async function duckDuckGoSearch(query) {
   try {
     var url = 'https://html.duckduckgo.com/html/?q=' + encodeURIComponent(String(query || '').slice(0, 200));
@@ -181,7 +241,6 @@ async function duckDuckGoSearch(query) {
       if (/^https?:\/\//i.test(href)) urls.push(href);
       results.push((results.length + 1) + '. **' + title + '**\n   ' + href);
     }
-    // Alternate markup some DDG edges return
     if (!results.length) {
       var re2 = /<a[^>]+href="(https?:\/\/[^"]+)"[^>]*class="[^"]*result[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
       while ((m = re2.exec(html)) && results.length < 5) {
@@ -201,17 +260,19 @@ async function duckDuckGoSearch(query) {
   }
 }
 
-function buildChatSystemPrompt(prefs, memory, webMode, codeMode, editMode) {
+function buildChatSystemPrompt(prefs, memory, webMode, codeMode, editMode, mcpServers, mcpTools) {
   var name = (prefs && prefs.displayName) ? String(prefs.displayName).trim() : '';
   var tone = (prefs && prefs.tone) ? String(prefs.tone) : 'friendly';
   var lines = [
     'You are the Canton Node Master Agent — a multi-tool assistant on a live platform.',
     'CAPABILITY LAW (non-negotiable):',
     '- This platform provides web search, page browse (Kernel stealth when keyed), image/video/music/TTS/code, MCP proxy, and memory.',
-    '- NEVER say you lack tools, cannot search, cannot browse, or that no tools are connected.',
+    '- The user\'s connected MCP servers and tools for THIS request are listed below under MCP INVENTORY. Treat that list as ground truth.',
+    '- When the user asks what MCPs they connected, list them from MCP INVENTORY. Never say you cannot see them.',
+    '- NEVER say you lack tools, cannot search, cannot browse, or that no tools are connected when inventory or platform tools exist.',
     '- NEVER write "I don\'t have access to MCP/web/browse" or "responding as text only".',
     '- If search results in the prompt are empty, say results were empty — do not invent a missing-tool story.',
-    '- If live extracts are present, prefer them. If only SERP links exist, use those. If neither, answer from knowledge and say so briefly.',
+    '- MCP tools are executed via the client Execute button / MCP panel; you may recommend a specific tool by server + name.',
     'COMPLETENESS: Never truncate. Prefer one complete deliverable over a partial sketch.',
     'Do not write "..." / "rest omitted" / "TODO: implement" as a substitute for real content.',
     'Answer in clean Markdown.'
@@ -227,13 +288,15 @@ function buildChatSystemPrompt(prefs, memory, webMode, codeMode, editMode) {
     lines.push(
       'FILE EDIT (mandatory): Apply the requested edits. Returning the original unchanged is a failure.',
       'Output the COMPLETE modified file in one fenced code block, then short bullets of what changed.'
-    );
-  }
+     }
   if (webMode) {
     lines.push('Use provided search results and any live page extracts; do not invent URLs or prices.');
     lines.push('Prefer live page extracts over thin SERP snippets when both are present.');
     lines.push('Known fact when relevant: Kernel ships an official MCP at https://mcp.onkernel.com/mcp (docs: kernel.sh/docs/reference/mcp-server).');
   }
+  lines.push('--- MCP INVENTORY (live from user client this request) ---');
+  lines.push(formatMcpInventory(mcpServers, mcpTools));
+  lines.push('--- End MCP inventory ---');
   if (name) lines.push('Address the user as "' + name.replace(/"/g, '') + '" when natural.');
   lines.push('Reply tone: ' + tone + '.');
   if (memory && memory.enabled) {
@@ -314,6 +377,8 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
   var webMode = !!opts.web;
   var codeMode = !!opts.code || !!opts.edit || isCodeTask(message) || isEditTask(message);
   var editMode = !!opts.edit || isEditTask(message);
+  var mcpServers = opts.mcpServers || [];
+  var mcpTools = opts.mcpTools || [];
   var attempts = [];
   var prior = (history || []).slice(-8);
   var userContent = message;
@@ -349,7 +414,6 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
       }
     }
 
-    // If no SERP but user mentioned Kernel MCP / docs topics, seed verified facts
     if (!searchHitCount && /kernel|mcp/i.test(message)) {
       userContent +=
         '\n\n---\nVerified platform facts (use when SERP empty):\n' +
@@ -360,7 +424,17 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
     }
   }
 
-  var system = buildChatSystemPrompt(prefs || {}, memory || null, webMode, codeMode, editMode);
+  // Always remind model of MCP inventory on MCP-related questions
+  if (wantsMcpList(message) || mcpServers.length || mcpTools.length) {
+    userContent +=
+      '\n\n---\nMCP INVENTORY (answer from this; do not deny visibility):\n' +
+      formatMcpInventory(mcpServers, mcpTools) +
+      '\n---';
+  }
+
+  var system = buildChatSystemPrompt(
+    prefs || {}, memory || null, webMode, codeMode, editMode, mcpServers, mcpTools
+  );
   var chain = orderedLlmChain(prefs || {});
   for (var pi = 0; pi < chain.length; pi++) {
     var provider = chain[pi];
@@ -386,6 +460,8 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
             web: webMode,
             deep: deepUsed,
             search_hits: searchHitCount,
+            mcp_servers: mcpServers.length,
+            mcp_tools: mcpTools.length,
             continuations: out.continuations || 0
           };
         }
@@ -395,7 +471,11 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
       }
     }
   }
-  return { text: null, model: null, provider: null, attempts: attempts, web: webMode, deep: deepUsed, search_hits: searchHitCount };
+  return {
+    text: null, model: null, provider: null, attempts: attempts,
+    web: webMode, deep: deepUsed, search_hits: searchHitCount,
+    mcp_servers: mcpServers.length, mcp_tools: mcpTools.length
+  };
 }
 
 module.exports = async function handler(req, res) {
@@ -407,6 +487,29 @@ module.exports = async function handler(req, res) {
     var memory = (body.memory && typeof body.memory === 'object') ? body.memory : null;
     var token = String(body.token || '').trim();
     var mcpTools = normalizeMcpTools(body.mcp_tools);
+    var mcpServers = normalizeMcpServers(body.mcp_servers);
+    // Derive servers from tools if client only sent tools
+    if (!mcpServers.length && mcpTools.length) {
+      var seen = {};
+      mcpTools.forEach(function (t) {
+        var key = t.serverId || t.serverName || 'unknown';
+        if (seen[key]) return;
+        seen[key] = true;
+        mcpServers.push({
+          id: t.serverId || key,
+          name: t.serverName || key,
+          url: '',
+          enabled: true,
+          toolCount: 0,
+          lastError: null
+        });
+      });
+      mcpServers.forEach(function (s) {
+        s.toolCount = mcpTools.filter(function (t) {
+          return (t.serverId || t.serverName) === (s.id || s.name);
+        }).length;
+      });
+    }
     var attachment = body.attachment || null;
     var forceWeb = !!(body.web || body.force_web || (prefs && prefs.forceWeb));
     var history = [];
@@ -430,7 +533,7 @@ module.exports = async function handler(req, res) {
     if (attachment && (attachment.dataUrl || attachment.text)) {
       var t0 = Date.now();
       var analyzed = await analyzeAttachment(message, attachment, history, prefs, function (msg, hist, pr, mem, opts) {
-        return tryGenerateAnswer(msg, hist, pr, mem || memory, opts || { web: false });
+        return tryGenerateAnswer(msg, hist, pr, mem || memory, opts || { web: false, mcpServers: mcpServers, mcpTools: mcpTools });
       });
       res.status(200).json({
         ok: true, agent_id: 'analyze', endpoint: 'vision.analyze',
@@ -440,7 +543,8 @@ module.exports = async function handler(req, res) {
         server_executed: true, result: analyzed.text,
         model_used: analyzed.model, provider: analyzed.provider, attempts: analyzed.attempts || [],
         memory_retrieved: !!(memory && memory.retrieved),
-        memory_hits: (memory && memory.hit_count) || 0
+        memory_hits: (memory && memory.hit_count) || 0,
+        mcp_servers: mcpServers.length, mcp_tools: mcpTools.length
       });
       return;
     }
@@ -467,7 +571,11 @@ module.exports = async function handler(req, res) {
           }
         }
       } catch (browseErr) { console.error('[master browse]', browseErr); }
-      var genBrowse = await tryGenerateAnswer(message + '\n\n(Browse unavailable this turn. Answer from web context if any.)', history, prefs, memory, { web: true });
+      var genBrowse = await tryGenerateAnswer(
+        message + '\n\n(Browse unavailable this turn. Answer from web context if any.)',
+        history, prefs, memory,
+        { web: true, mcpServers: mcpServers, mcpTools: mcpTools }
+      );
       res.status(200).json({
         ok: true, agent_id: 'web', endpoint: 'web.search',
         thinking: route.thinking, thinking_ms: Date.now() - tBrowse,
@@ -483,7 +591,11 @@ module.exports = async function handler(req, res) {
     if (route.agent_id === 'chat' || route.agent_id === 'web' || route.agent_id === 'analyze') {
       var useWeb = forceWeb || route.agent_id === 'web' || wantsWeb(message);
       var gen = await tryGenerateAnswer(message, history, prefs, memory, {
-        web: useWeb, code: isCodeTask(message), edit: isEditTask(message)
+        web: useWeb,
+        code: isCodeTask(message),
+        edit: isEditTask(message),
+        mcpServers: mcpServers,
+        mcpTools: mcpTools
       });
       res.status(200).json({
         ok: true,
@@ -498,6 +610,7 @@ module.exports = async function handler(req, res) {
         result: gen.text || 'No model answered. Check API keys (ZAI / VINCI / OPENROUTER).',
         model_used: gen.model, provider: gen.provider, attempts: gen.attempts || [],
         web: !!gen.web, deep: !!gen.deep, search_hits: gen.search_hits || 0,
+        mcp_servers: mcpServers.length, mcp_tools: mcpTools.length,
         continuations: gen.continuations || 0,
         memory_retrieved: !!(memory && memory.retrieved),
         memory_hits: (memory && memory.hit_count) || 0
@@ -508,7 +621,8 @@ module.exports = async function handler(req, res) {
     res.status(200).json({
       ok: true, agent_id: route.agent_id, endpoint: route.endpoint,
       params: route.params || {}, reasoning: route.reasoning,
-      thinking: route.thinking, thinking_ms: 0, server_executed: false
+      thinking: route.thinking, thinking_ms: 0, server_executed: false,
+      mcp_servers: mcpServers.length, mcp_tools: mcpTools.length
     });
   } catch (err) {
     console.error('[master]', err);

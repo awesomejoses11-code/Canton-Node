@@ -1,4 +1,4 @@
-/* api/master.js — chat + attachment + file-edit (complete answers) + vector memory */
+/* api/master.js — chat + attachment + file-edit (complete answers) + vector memory + stealth web */
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const VINCI_URL = 'https://vinci.getsimpledirect.com/api/v1/chat/completions';
 const HF_URL = 'https://router.huggingface.co/v1/chat/completions';
@@ -88,7 +88,12 @@ function buildThinking(message, route) {
 
 function wantsWeb(message) {
   var m = String(message || '').toLowerCase();
-  return /\b(web search|search the web|google|look up|lookup|latest|current|news|price of|coingecko)\b/.test(m);
+  return /\b(web search|search the web|google|look up|lookup|latest|current|news|price of|coingecko|research)\b/.test(m);
+}
+
+function wantsDeepWeb(message) {
+  var m = String(message || '').toLowerCase();
+  return /\b(deep search|deep research|read (the )?page|full (page|article)|browse (the )?results?|stealth)\b/.test(m);
 }
 
 function isCodeTask(message) {
@@ -127,6 +132,7 @@ function heuristicRoute(message, mcpTools) {
   return null;
 }
 
+/** @returns {{ note: string, urls: string[] }} */
 async function duckDuckGoSearch(query) {
   try {
     var url = 'https://html.duckduckgo.com/html/?q=' + encodeURIComponent(String(query || '').slice(0, 200));
@@ -135,9 +141,10 @@ async function duckDuckGoSearch(query) {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; CantonNode/1.0)', Accept: 'text/html' },
       signal: AbortSignal.timeout(12000)
     });
-    if (!resp.ok) return '';
+    if (!resp.ok) return { note: '', urls: [] };
     var html = await resp.text();
     var results = [];
+    var urls = [];
     var re = /<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
     var m;
     while ((m = re.exec(html)) && results.length < 5) {
@@ -145,10 +152,16 @@ async function duckDuckGoSearch(query) {
       var title = m[2].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
       var uddg = href.match(/[?&]uddg=([^&]+)/);
       if (uddg) { try { href = decodeURIComponent(uddg[1]); } catch (_) {} }
+      if (/^https?:\/\//i.test(href)) urls.push(href);
       results.push((results.length + 1) + '. **' + title + '**\n   ' + href);
     }
-    return results.length ? ('Web search results:\n' + results.join('\n')) : '';
-  } catch (_) { return ''; }
+    return {
+      note: results.length ? ('Web search results:\n' + results.join('\n')) : '',
+      urls: urls
+    };
+  } catch (_) {
+    return { note: '', urls: [] };
+  }
 }
 
 function buildChatSystemPrompt(prefs, memory, webMode, codeMode, editMode) {
@@ -173,7 +186,10 @@ function buildChatSystemPrompt(prefs, memory, webMode, codeMode, editMode) {
       'Output the COMPLETE modified file in one fenced code block, then short bullets of what changed.'
     );
   }
-  if (webMode) lines.push('Use provided search results; do not invent URLs or prices.');
+  if (webMode) {
+    lines.push('Use provided search results and any live page extracts; do not invent URLs or prices.');
+    lines.push('Prefer live page extracts over thin SERP snippets when both are present.');
+  }
   if (name) lines.push('Address the user as "' + name.replace(/"/g, '') + '" when natural.');
   lines.push('Reply tone: ' + tone + '.');
   if (memory && memory.enabled) {
@@ -258,10 +274,31 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
   var prior = (history || []).slice(-8);
   var userContent = message;
   var maxTokens = codeMode ? MAX_TOKENS_CODE : (webMode ? MAX_TOKENS_WEB : MAX_TOKENS_CHAT);
+  var deepUsed = false;
 
   if (webMode) {
-    var searchNote = await duckDuckGoSearch(message);
-    if (searchNote) userContent = message + '\n\n---\n' + searchNote + '\n---\nUse the search results. Cite links in Markdown.';
+    var search = await duckDuckGoSearch(message);
+    var searchNote = search.note || '';
+    if (searchNote) {
+      userContent = message + '\n\n---\n' + searchNote + '\n---\nUse the search results. Cite links in Markdown.';
+    }
+
+    // Stealth deep-read: top hit when Kernel is keyed.
+    // Always 1 page on normal web; up to 2 when user asks for deep research.
+    var canDeep = kernelLib && typeof kernelLib.deepReadUrls === 'function' &&
+      kernelLib.kernelKey && kernelLib.kernelKey();
+    if (canDeep && search.urls && search.urls.length) {
+      var maxPages = wantsDeepWeb(message) ? 2 : 1;
+      try {
+        var deep = await kernelLib.deepReadUrls(search.urls, maxPages);
+        if (deep && deep.ok && deep.text) {
+          userContent += '\n\n---\n' + deep.text + '\n---\nPrefer these live extracts for facts.';
+          deepUsed = true;
+        }
+      } catch (deepErr) {
+        console.error('[master deep]', deepErr && deepErr.message);
+      }
+    }
   }
 
   var system = buildChatSystemPrompt(prefs || {}, memory || null, webMode, codeMode, editMode);
@@ -280,8 +317,14 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
         if (out.text) {
           return {
             text: out.text,
-            model: m.label + (webMode ? ' · web' : '') + (codeMode ? ' · code' : ''),
-            provider: provider.id, attempts: attempts, web: webMode, continuations: out.continuations || 0
+            model: m.label +
+              (webMode ? (deepUsed ? ' · web+stealth' : ' · web') : '') +
+              (codeMode ? ' · code' : ''),
+            provider: provider.id,
+            attempts: attempts,
+            web: webMode,
+            deep: deepUsed,
+            continuations: out.continuations || 0
           };
         }
         attempts.push({ endpoint: m.model, error: 'empty' });
@@ -290,7 +333,7 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
       }
     }
   }
-  return { text: null, model: null, provider: null, attempts: attempts, web: webMode };
+  return { text: null, model: null, provider: null, attempts: attempts, web: webMode, deep: deepUsed };
 }
 
 module.exports = async function handler(req, res) {
@@ -365,7 +408,8 @@ module.exports = async function handler(req, res) {
         server_executed: !!genBrowse.text,
         result: genBrowse.text || 'Could not browse. Paste a full https:// URL.',
         model_used: genBrowse.model, provider: genBrowse.provider, reasoning: 'Browse fallback → web',
-        memory_retrieved: !!(memory && memory.retrieved)
+        memory_retrieved: !!(memory && memory.retrieved),
+        deep: !!genBrowse.deep
       });
       return;
     }
@@ -380,12 +424,14 @@ module.exports = async function handler(req, res) {
         agent_id: useWeb ? 'web' : route.agent_id,
         endpoint: useWeb ? 'web.search' : route.endpoint,
         params: route.params || {},
-        reasoning: useWeb ? (route.reasoning || 'Web-enabled answer') : route.reasoning,
+        reasoning: useWeb
+          ? (gen.deep ? 'Web + Kernel stealth page extract' : (route.reasoning || 'Web-enabled answer'))
+          : route.reasoning,
         thinking: route.thinking, thinking_ms: 0,
         server_executed: !!gen.text,
         result: gen.text || 'No model answered. Check API keys (ZAI / VINCI / OPENROUTER).',
         model_used: gen.model, provider: gen.provider, attempts: gen.attempts || [],
-        web: !!gen.web, continuations: gen.continuations || 0,
+        web: !!gen.web, deep: !!gen.deep, continuations: gen.continuations || 0,
         memory_retrieved: !!(memory && memory.retrieved),
         memory_hits: (memory && memory.hit_count) || 0
       });

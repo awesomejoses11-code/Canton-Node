@@ -43,6 +43,16 @@
     var u = window.Auth && Auth.current && Auth.current();
     return u ? u.email : null;
   }
+  function sessionToken() {
+    try {
+      if (window.Auth && typeof Auth.token === 'function') return Auth.token() || '';
+      if (window.Auth && Auth.current) {
+        var u = Auth.current();
+        if (u && u.token) return String(u.token);
+      }
+    } catch (_) {}
+    return '';
+  }
   function el(id) { return document.getElementById(id); }
 
   function renderAttachmentBar() {
@@ -139,7 +149,7 @@
 
   function simpleMarkdownToHtml(src) {
     var s = String(src == null ? '' : src);
-    s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    s = s.replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>');
     s = s.replace(/```([\s\S]*?)```/g, function (_, code) {
       return '<pre><code>' + code.replace(/^\n+|\n+$/g, '') + '</code></pre>';
     });
@@ -324,6 +334,7 @@
     if (b) b.classList.add('hidden');
   }
 
+  /** Flat tool list for Master (names + schemas). */
   async function loadMcpTools() {
     var em = email();
     if (!window.MCPClient || !em) return [];
@@ -336,6 +347,29 @@
         };
       });
     } catch (e) { return []; }
+  }
+
+  /** Server inventory always sent — even if tool listing fails — so Master can name your MCPs. */
+  function loadMcpServers() {
+    var em = email();
+    if (!window.MCPClient || !em) return [];
+    try {
+      return MCPClient.listServers(em)
+        .filter(function (s) { return s && s.enabled !== false && s.url; })
+        .slice(0, 20)
+        .map(function (s) {
+          return {
+            id: s.id,
+            name: s.name,
+            url: s.url,
+            enabled: s.enabled !== false,
+            toolCount: (s.lastTools && s.lastTools.length) || 0,
+            lastError: s.lastError || null
+          };
+        });
+    } catch (_) {
+      return [];
+    }
   }
 
   function buildHistoryPayload() {
@@ -361,6 +395,7 @@
     var em = email();
     var prefs = (window.Settings && em) ? Settings.load(em) : {};
     var mcpTools = await loadMcpTools();
+    var mcpServers = loadMcpServers();
     var attachNames = attachedFiles.map(function (f) { return f.name; });
 
     if (window.History && em) {
@@ -413,7 +448,9 @@
       history: buildHistoryPayload(),
       prefs: prefs || {},
       memory: memory,
+      token: sessionToken(),
       mcp_tools: mcpTools,
+      mcp_servers: mcpServers,
       attachment: attachment,
       attachments: attachments
     };

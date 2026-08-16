@@ -1,5 +1,5 @@
-/* api/master.js — chat + attachment + file-edit + vector memory + stealth web + MCP awareness
- * Hard rule: never role-play "I have no tools / cannot search / cannot see MCPs".
+/* api/master.js — chat + attachment + file-edit + vector memory + stealth web + MCP + SSE stream
+ * Hard rule: never role-play "I have no tools". Prefer complete answers; auto-continue if truncated.
  */
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const VINCI_URL = 'https://vinci.getsimpledirect.com/api/v1/chat/completions';
@@ -12,6 +12,8 @@ var db = null;
 try { db = require('../lib/db'); } catch (_) { db = null; }
 var memoryIndex = null;
 try { memoryIndex = require('../lib/memory-index'); } catch (_) { memoryIndex = null; }
+var llmStream = null;
+try { llmStream = require('../lib/llm-stream'); } catch (_) { llmStream = null; }
 
 const MAX_TOKENS_CHAT = 12000;
 const MAX_TOKENS_WEB = 12000;
@@ -19,7 +21,7 @@ const MAX_TOKENS_CODE = 16000;
 const HISTORY_MSG_CHARS = 8000;
 const REF_CHARS = 12000;
 const LOG_CHARS = 8000;
-const MAX_CONTINUATIONS = 3;
+const MAX_CONTINUATIONS = 4;
 
 const LLM_CHAIN = [
   { id: 'zhipu', url: ZHIPU_URL, envKey: 'ZAI_API_KEY', altEnvKeys: ['ZHIPU_API_KEY', 'BIGMODEL_API_KEY'],
@@ -74,9 +76,7 @@ function normalizeMcpTools(raw) {
   return raw.slice(0, 60).map(function (t) {
     return {
       qualified: t.qualified || ((t.serverName || t.serverId || '') + '.' + (t.name || '')),
-      serverId: t.serverId,
-      serverName: t.serverName,
-      name: t.name,
+      serverId: t.serverId, serverName: t.serverName, name: t.name,
       description: String(t.description || '').slice(0, 200)
     };
   }).filter(function (t) { return t.name; });
@@ -86,10 +86,8 @@ function normalizeMcpServers(raw) {
   if (!Array.isArray(raw)) return [];
   return raw.slice(0, 20).map(function (s) {
     return {
-      id: s.id || '',
-      name: String(s.name || 'MCP').slice(0, 80),
-      url: String(s.url || '').slice(0, 240),
-      enabled: s.enabled !== false,
+      id: s.id || '', name: String(s.name || 'MCP').slice(0, 80),
+      url: String(s.url || '').slice(0, 240), enabled: s.enabled !== false,
       toolCount: typeof s.toolCount === 'number' ? s.toolCount : (Array.isArray(s.lastTools) ? s.lastTools.length : 0),
       lastError: s.lastError ? String(s.lastError).slice(0, 120) : null
     };
@@ -106,13 +104,9 @@ function formatMcpInventory(mcpServers, mcpTools) {
   if (servers.length) {
     lines.push('Connected MCP servers (' + servers.length + '):');
     servers.forEach(function (s, i) {
-      lines.push(
-        (i + 1) + '. **' + s.name + '**' +
-        (s.url ? ' — `' + s.url + '`' : '') +
-        (s.enabled === false ? ' (disabled)' : '') +
-        (s.toolCount ? ' · ~' + s.toolCount + ' tools cached' : '') +
-        (s.lastError ? ' · last error: ' + s.lastError : '')
-      );
+      lines.push((i + 1) + '. **' + s.name + '**' + (s.url ? ' — `' + s.url + '`' : '') +
+        (s.enabled === false ? ' (disabled)' : '') + (s.toolCount ? ' · ~' + s.toolCount + ' tools cached' : '') +
+        (s.lastError ? ' · last error: ' + s.lastError : ''));
     });
   }
   if (tools.length) {
@@ -166,6 +160,9 @@ function isEditTask(message) {
 }
 
 function looksTruncated(text, finishReason) {
+  if (llmStream && typeof llmStream.looksIncomplete === 'function') {
+    return llmStream.looksIncomplete(text, finishReason);
+  }
   if (finishReason === 'length' || finishReason === 'max_tokens') return true;
   var s = String(text || '').trim();
   if (!s) return false;
@@ -186,9 +183,7 @@ function sanitizeCapabilityDenial(text) {
     /every attempt to search or browse has come back empty[^.\n]*[.\n]/gi,
     /I don'?t want to give you fabricated URLs[^.\n]*[.\n]/gi
   ];
-  for (var i = 0; i < patterns.length; i++) {
-    s = s.replace(patterns[i], '');
-  }
+  for (var i = 0; i < patterns.length; i++) s = s.replace(patterns[i], '');
   return s.replace(/\n{3,}/g, '\n\n').trim();
 }
 
@@ -250,10 +245,7 @@ async function duckDuckGoSearch(query) {
         results.push((results.length + 1) + '. **' + title2 + '**\n   ' + href2);
       }
     }
-    return {
-      note: results.length ? ('Web search results:\n' + results.join('\n')) : '',
-      urls: urls
-    };
+    return { note: results.length ? ('Web search results:\n' + results.join('\n')) : '', urls: urls };
   } catch (_) {
     return { note: '', urls: [] };
   }
@@ -277,17 +269,13 @@ function buildChatSystemPrompt(prefs, memory, webMode, codeMode, editMode, mcpSe
     'Answer in clean Markdown.'
   ];
   if (codeMode) {
-    lines.push(
-      'CODING: Output complete runnable code; close every brace and fence.',
+    lines.push('CODING: Output complete runnable code; close every brace and fence.',
       'No placeholder stubs unless the user asked for stubs.',
-      'Apply Agent reference conventions when present.'
-    );
+      'Apply Agent reference conventions when present.');
   }
   if (editMode) {
-    lines.push(
-      'FILE EDIT (mandatory): Apply the requested edits. Returning the original unchanged is a failure.',
-      'Output the COMPLETE modified file in one fenced code block, then short bullets of what changed.'
-    );
+    lines.push('FILE EDIT (mandatory): Apply the requested edits. Returning the original unchanged is a failure.',
+      'Output the COMPLETE modified file in one fenced code block, then short bullets of what changed.');
   }
   if (webMode) {
     lines.push('Use provided search results and any live page extracts; do not invent URLs or prices.');
@@ -337,6 +325,9 @@ async function resolveMemoryForRequest(token, message, memory) {
 async function callOnce(provider, apiKey, modelCfg, messages, maxTokens, webPlugin) {
   var body = { model: modelCfg.model, messages: messages, max_tokens: maxTokens };
   if (webPlugin && provider.id === 'openrouter') body.plugins = [{ id: 'web', max_results: 5 }];
+  if (llmStream && llmStream.completeOnce) {
+    return llmStream.completeOnce(provider.url, authHeaders(provider, apiKey), body, 90000);
+  }
   var resp = await fetch(provider.url, {
     method: 'POST', headers: authHeaders(provider, apiKey),
     body: JSON.stringify(body), signal: AbortSignal.timeout(90000)
@@ -350,39 +341,63 @@ async function callOnce(provider, apiKey, modelCfg, messages, maxTokens, webPlug
   return { text: text, finishReason: String(finishReason || '').toLowerCase() };
 }
 
-async function generateWithContinuation(provider, apiKey, modelCfg, system, prior, userContent, maxTokens, webPlugin) {
+async function generateWithContinuation(provider, apiKey, modelCfg, system, prior, userContent, maxTokens, webPlugin, onDelta) {
   var messages = [{ role: 'system', content: system }].concat(prior || []).concat([{ role: 'user', content: userContent }]);
-  var first = await callOnce(provider, apiKey, modelCfg, messages, maxTokens, webPlugin);
+  var body = { model: modelCfg.model, messages: messages, max_tokens: maxTokens };
+  if (webPlugin && provider.id === 'openrouter') body.plugins = [{ id: 'web', max_results: 5 }];
+
+  var first;
+  if (onDelta && llmStream && llmStream.streamOnce) {
+    try {
+      first = await llmStream.streamOnce(
+        provider.url, authHeaders(provider, apiKey), body,
+        function (delta, full) { onDelta(delta, full); },
+        90000
+      );
+    } catch (streamErr) {
+      // Stream failed — fall back to non-stream so the turn still completes (no wasted empty UI)
+      first = await callOnce(provider, apiKey, modelCfg, messages, maxTokens, webPlugin);
+      if (first.text && onDelta) onDelta(first.text, first.text);
+    }
+  } else {
+    first = await callOnce(provider, apiKey, modelCfg, messages, maxTokens, webPlugin);
+    if (first.text && onDelta) onDelta(first.text, first.text);
+  }
+
   if (!first.text) return first;
+
   var full = first.text;
   var finish = first.finishReason;
   var cont = 0;
+  // Auto-continue incomplete outputs so users do not re-ask (wastes provider quota)
   while (cont < MAX_CONTINUATIONS && looksTruncated(full, finish)) {
     cont++;
     var contMessages = messages.concat([
       { role: 'assistant', content: full },
-      { role: 'user', content: 'Continue exactly from where you left off. Do not repeat. Close open fences. Finish completely.' }
+      { role: 'user', content: 'Continue exactly from where you left off. Do not repeat prior text. Close open code fences. Finish the complete answer.' }
     ]);
     var next = await callOnce(provider, apiKey, modelCfg, contMessages, maxTokens, false);
     if (!next.text) break;
-    full = full + (full.endsWith('\n') ? '' : '\n') + next.text;
+    var piece = next.text;
+    // Avoid obvious overlap waste
+    if (full.endsWith(piece.slice(0, Math.min(40, piece.length)))) {
+      piece = piece.slice(Math.min(40, piece.length));
+    }
+    if (!piece) break;
+    full = full + (full.endsWith('\n') ? '' : '\n') + piece;
+    if (onDelta) onDelta('\n' + piece, full);
     finish = next.finishReason;
     if (!looksTruncated(full, finish)) break;
   }
   return { text: full, finishReason: finish, continuations: cont };
 }
 
-async function tryGenerateAnswer(message, history, prefs, memory, opts) {
+async function prepareUserContent(message, opts) {
   opts = opts || {};
   var webMode = !!opts.web;
-  var codeMode = !!opts.code || !!opts.edit || isCodeTask(message) || isEditTask(message);
-  var editMode = !!opts.edit || isEditTask(message);
   var mcpServers = opts.mcpServers || [];
   var mcpTools = opts.mcpTools || [];
-  var attempts = [];
-  var prior = (history || []).slice(-8);
   var userContent = message;
-  var maxTokens = codeMode ? MAX_TOKENS_CODE : (webMode ? MAX_TOKENS_WEB : MAX_TOKENS_CHAT);
   var deepUsed = false;
   var searchHitCount = 0;
 
@@ -398,9 +413,7 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
         'Do NOT claim you lack web search or tools. Answer from reliable knowledge; for Kernel MCP specifically you may state the official endpoint https://mcp.onkernel.com/mcp and docs at https://kernel.sh/docs/reference/mcp-server.\n' +
         'If the user provided a URL, they can ask to Browse it for a live extract.\n---';
     }
-
-    var canDeep = kernelLib && typeof kernelLib.deepReadUrls === 'function' &&
-      kernelLib.kernelKey && kernelLib.kernelKey();
+    var canDeep = kernelLib && typeof kernelLib.deepReadUrls === 'function' && kernelLib.kernelKey && kernelLib.kernelKey();
     if (canDeep && search.urls && search.urls.length) {
       var maxPages = wantsDeepWeb(message) ? 2 : 1;
       try {
@@ -413,7 +426,6 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
         console.error('[master deep]', deepErr && deepErr.message);
       }
     }
-
     if (!searchHitCount && /kernel|mcp/i.test(message)) {
       userContent +=
         '\n\n---\nVerified platform facts (use when SERP empty):\n' +
@@ -423,17 +435,31 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
         '- Canton Node also browses via server-side Kernel REST when KERNEL_API_KEY is set.\n---';
     }
   }
-
   if (wantsMcpList(message) || mcpServers.length || mcpTools.length) {
-    userContent +=
-      '\n\n---\nMCP INVENTORY (answer from this; do not deny visibility):\n' +
-      formatMcpInventory(mcpServers, mcpTools) +
-      '\n---';
+    userContent += '\n\n---\nMCP INVENTORY (answer from this; do not deny visibility):\n' +
+      formatMcpInventory(mcpServers, mcpTools) + '\n---';
   }
+  return { userContent: userContent, deepUsed: deepUsed, searchHitCount: searchHitCount };
+}
 
-  var system = buildChatSystemPrompt(
-    prefs || {}, memory || null, webMode, codeMode, editMode, mcpServers, mcpTools
-  );
+async function tryGenerateAnswer(message, history, prefs, memory, opts) {
+  opts = opts || {};
+  var webMode = !!opts.web;
+  var codeMode = !!opts.code || !!opts.edit || isCodeTask(message) || isEditTask(message);
+  var editMode = !!opts.edit || isEditTask(message);
+  var mcpServers = opts.mcpServers || [];
+  var mcpTools = opts.mcpTools || [];
+  var onDelta = typeof opts.onDelta === 'function' ? opts.onDelta : null;
+  var attempts = [];
+  var prior = (history || []).slice(-8);
+  var maxTokens = codeMode ? MAX_TOKENS_CODE : (webMode ? MAX_TOKENS_WEB : MAX_TOKENS_CHAT);
+
+  var prep = await prepareUserContent(message, { web: webMode, mcpServers: mcpServers, mcpTools: mcpTools });
+  var userContent = prep.userContent;
+  var deepUsed = prep.deepUsed;
+  var searchHitCount = prep.searchHitCount;
+
+  var system = buildChatSystemPrompt(prefs || {}, memory || null, webMode, codeMode, editMode, mcpServers, mcpTools);
   var chain = orderedLlmChain(prefs || {});
   for (var pi = 0; pi < chain.length; pi++) {
     var provider = chain[pi];
@@ -444,7 +470,8 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
       try {
         var out = await generateWithContinuation(
           provider, apiKey, m, system, prior, userContent, maxTokens,
-          webMode && provider.id === 'openrouter'
+          webMode && provider.id === 'openrouter',
+          onDelta
         );
         if (out.text) {
           var cleaned = sanitizeCapabilityDenial(out.text);
@@ -453,7 +480,8 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
             text: cleaned,
             model: m.label +
               (webMode ? (deepUsed ? ' · web+stealth' : ' · web') : '') +
-              (codeMode ? ' · code' : ''),
+              (codeMode ? ' · code' : '') +
+              (out.continuations ? ' · cont×' + out.continuations : ''),
             provider: provider.id,
             attempts: attempts,
             web: webMode,
@@ -477,6 +505,11 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
   };
 }
 
+function sseWrite(res, event, data) {
+  res.write('event: ' + event + '\n');
+  res.write('data: ' + JSON.stringify(data) + '\n\n');
+}
+
 module.exports = async function handler(req, res) {
   try {
     if (req.method !== 'POST') { res.status(405).json({ error: 'Method not allowed. Use POST.' }); return; }
@@ -485,6 +518,7 @@ module.exports = async function handler(req, res) {
     var prefs = (body.prefs && typeof body.prefs === 'object') ? body.prefs : {};
     var memory = (body.memory && typeof body.memory === 'object') ? body.memory : null;
     var token = String(body.token || '').trim();
+    var wantStream = !!(body.stream);
     var mcpTools = normalizeMcpTools(body.mcp_tools);
     var mcpServers = normalizeMcpServers(body.mcp_servers);
     if (!mcpServers.length && mcpTools.length) {
@@ -493,14 +527,7 @@ module.exports = async function handler(req, res) {
         var key = t.serverId || t.serverName || 'unknown';
         if (seen[key]) return;
         seen[key] = true;
-        mcpServers.push({
-          id: t.serverId || key,
-          name: t.serverName || key,
-          url: '',
-          enabled: true,
-          toolCount: 0,
-          lastError: null
-        });
+        mcpServers.push({ id: t.serverId || key, name: t.serverName || key, url: '', enabled: true, toolCount: 0, lastError: null });
       });
       mcpServers.forEach(function (s) {
         s.toolCount = mcpTools.filter(function (t) {
@@ -546,6 +573,7 @@ module.exports = async function handler(req, res) {
       });
       return;
     }
+
     var route = heuristicRoute(message, mcpTools);
     if (!route) route = { agent_id: 'chat', endpoint: 'chat.answer', params: { prompt: message }, reasoning: 'Default chat' };
     if (forceWeb && route.agent_id === 'chat') {
@@ -588,6 +616,60 @@ module.exports = async function handler(req, res) {
 
     if (route.agent_id === 'chat' || route.agent_id === 'web' || route.agent_id === 'analyze') {
       var useWeb = forceWeb || route.agent_id === 'web' || wantsWeb(message);
+
+      // ——— SSE streaming path ———
+      if (wantStream) {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache, no-transform',
+          Connection: 'keep-alive',
+          'X-Accel-Buffering': 'no'
+        });
+        if (typeof res.flushHeaders === 'function') res.flushHeaders();
+        sseWrite(res, 'meta', {
+          ok: true,
+          agent_id: useWeb ? 'web' : route.agent_id,
+          endpoint: useWeb ? 'web.search' : route.endpoint,
+          thinking: route.thinking,
+          reasoning: route.reasoning
+        });
+        try {
+          var genS = await tryGenerateAnswer(message, history, prefs, memory, {
+            web: useWeb,
+            code: isCodeTask(message),
+            edit: isEditTask(message),
+            mcpServers: mcpServers,
+            mcpTools: mcpTools,
+            onDelta: function (delta, full) {
+              sseWrite(res, 'delta', { text: delta, full_len: (full || '').length });
+            }
+          });
+          var finalText = genS.text ? sanitizeCapabilityDenial(genS.text) : null;
+          if (!finalText) finalText = genS.text;
+          sseWrite(res, 'done', {
+            ok: true,
+            server_executed: !!finalText,
+            result: finalText || 'No model answered. Check API keys (ZAI / VINCI / OPENROUTER).',
+            model_used: genS.model,
+            provider: genS.provider,
+            attempts: genS.attempts || [],
+            web: !!genS.web,
+            deep: !!genS.deep,
+            search_hits: genS.search_hits || 0,
+            mcp_servers: mcpServers.length,
+            mcp_tools: mcpTools.length,
+            continuations: genS.continuations || 0,
+            memory_retrieved: !!(memory && memory.retrieved),
+            memory_hits: (memory && memory.hit_count) || 0
+          });
+        } catch (streamErr) {
+          sseWrite(res, 'error', { error: String(streamErr && streamErr.message ? streamErr.message : streamErr).slice(0, 300) });
+        }
+        res.end();
+        return;
+      }
+
+      // ——— JSON (non-stream) path ———
       var gen = await tryGenerateAnswer(message, history, prefs, memory, {
         web: useWeb,
         code: isCodeTask(message),
@@ -624,7 +706,14 @@ module.exports = async function handler(req, res) {
     });
   } catch (err) {
     console.error('[master]', err);
-    res.status(500).json({ error: String(err && err.message ? err.message : err).slice(0, 300) });
+    if (!res.headersSent) {
+      res.status(500).json({ error: String(err && err.message ? err.message : err).slice(0, 300) });
+    } else {
+      try {
+        sseWrite(res, 'error', { error: String(err && err.message ? err.message : err).slice(0, 300) });
+        res.end();
+      } catch (_) {}
+    }
   }
 };
 

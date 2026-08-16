@@ -531,7 +531,7 @@ module.exports = async function handler(req, res) {
     if (attachment && (attachment.dataUrl || attachment.text)) {
       var t0 = Date.now();
       var analyzed = await analyzeAttachment(message, attachment, history, prefs, function (msg, hist, pr, mem, opts) {
-        return tryGenerateAnswer(msg, hist, pr, mem || memory, opts || { web:: false, mcpServers: mcpServers, mcpTools: mcpTools });
+        return tryGenerateAnswer(msg, hist, pr, mem || memory, opts || { web: false, mcpServers: mcpServers, mcpTools: mcpTools });
       });
       res.status(200).json({
         ok: true, agent_id: 'analyze', endpoint: 'vision.analyze',

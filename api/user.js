@@ -1,15 +1,16 @@
 /* =========================================================================
  * api/user.js — Combined Neon user data (chat history + memory docs + settings)
- * Replaces api/history.js + api/docs.js to stay under Vercel Hobby 12-fn limit.
  *
  * History:  POST { token, action: "load"|"save", sessions? }
  * Docs:     GET/POST with key=reference|user_logs|settings or action=list
- * Memory:   POST { token, action: "reindex_memory" }  — rebuild pgvector chunks
+ * Memory:   POST { token, action: "reindex_memory" }
  * ========================================================================= */
-
 var db = require('../lib/db');
 
 var ALLOWED_KEYS = { reference: true, user_logs: true, settings: true };
+var MAX_SESSIONS = 100;
+var MAX_MESSAGES = 200;
+var MAX_MSG_CHARS = 32000;
 
 var DEFAULTS = {
   reference:
@@ -44,6 +45,96 @@ var DEFAULTS = {
     memoryEnabled: true
   })
 };
+
+function ts(v) {
+  if (v == null) return 0;
+  if (typeof v === 'number') return v;
+  var n = Date.parse(String(v));
+  return isNaN(n) ? 0 : n;
+}
+
+function normalizeSessions(raw) {
+  var sessions = Array.isArray(raw) ? raw : [];
+  return sessions.slice(0, MAX_SESSIONS).map(function (s) {
+    if (!s || typeof s !== 'object' || !s.id) return null;
+    var msgs = Array.isArray(s.messages) ? s.messages.slice(-MAX_MESSAGES) : [];
+    return {
+      id: String(s.id),
+      title: String(s.title || 'Chat').slice(0, 80),
+      createdAt: s.createdAt || Date.now(),
+      updatedAt: s.updatedAt || Date.now(),
+      messages: msgs.map(function (m) {
+        if (!m || typeof m !== 'object') return null;
+        return {
+          id: m.id || (Date.now().toString(36) + Math.random().toString(36).slice(2, 6)),
+          role: m.role,
+          kind: m.kind || 'text',
+          content: String(m.content || '').slice(0, MAX_MSG_CHARS),
+          meta: m.meta && typeof m.meta === 'object' ? m.meta : {},
+          createdAt: m.createdAt || Date.now()
+        };
+      }).filter(Boolean)
+    };
+  }).filter(Boolean);
+}
+
+function mergeMessages(a, b) {
+  var map = {};
+  var order = [];
+  function ingest(list) {
+    (list || []).forEach(function (m) {
+      if (!m || !m.id) return;
+      var prev = map[m.id];
+      if (!prev) {
+        map[m.id] = m;
+        order.push(m.id);
+        return;
+      }
+      var prevLen = String(prev.content || '').length;
+      var nextLen = String(m.content || '').length;
+      if (nextLen > prevLen || (nextLen === prevLen && ts(m.createdAt) >= ts(prev.createdAt))) {
+        map[m.id] = Object.assign({}, prev, m, {
+          content: nextLen >= prevLen ? m.content : prev.content,
+          meta: (m.meta && Object.keys(m.meta).length) ? m.meta : (prev.meta || {})
+        });
+      }
+    });
+  }
+  ingest(a);
+  ingest(b);
+  return order.map(function (id) { return map[id]; }).slice(-MAX_MESSAGES);
+}
+
+function mergeSessions(existing, incoming) {
+  var map = {};
+  function ingest(list) {
+    (list || []).forEach(function (s) {
+      if (!s || !s.id) return;
+      var prev = map[s.id];
+      if (!prev) {
+        map[s.id] = s;
+        return;
+      }
+      var mergedMsgs = mergeMessages(prev.messages, s.messages);
+      var newer = ts(s.updatedAt) >= ts(prev.updatedAt);
+      map[s.id] = {
+        id: s.id,
+        title: (newer && s.title) ? s.title : (prev.title || s.title || 'Chat'),
+        createdAt: (ts(s.createdAt) && ts(prev.createdAt))
+          ? (ts(s.createdAt) < ts(prev.createdAt) ? s.createdAt : prev.createdAt)
+          : (s.createdAt || prev.createdAt),
+        updatedAt: newer ? s.updatedAt : prev.updatedAt,
+        messages: mergedMsgs
+      };
+    });
+  }
+  ingest(existing);
+  ingest(incoming);
+  return Object.keys(map)
+    .map(function (k) { return map[k]; })
+    .sort(function (a, b) { return ts(a.updatedAt) < ts(b.updatedAt) ? 1 : -1; })
+    .slice(0, MAX_SESSIONS);
+}
 
 async function resolveEmail(token) {
   return db.resolveEmailFromToken(token);
@@ -81,41 +172,36 @@ async function handleHistory(req, res, email, body) {
       try { sessions = JSON.parse(sessions); } catch (_) { sessions = []; }
     }
     if (!Array.isArray(sessions)) sessions = [];
-    res.status(200).json({ ok: true, sessions: sessions });
+    res.status(200).json({ ok: true, sessions: sessions, count: sessions.length });
     return;
   }
 
   if (action === 'save') {
-    var sessions = Array.isArray(body.sessions) ? body.sessions : [];
-    sessions = sessions.slice(0, 100).map(function (s) {
-      if (!s || typeof s !== 'object') return null;
-      var msgs = Array.isArray(s.messages) ? s.messages.slice(-200) : [];
-      return {
-        id: s.id,
-        title: String(s.title || 'Chat').slice(0, 80),
-        createdAt: s.createdAt || Date.now(),
-        updatedAt: s.updatedAt || Date.now(),
-        messages: msgs.map(function (m) {
-          return {
-            id: m.id,
-            role: m.role,
-            kind: m.kind || 'text',
-            content: String(m.content || '').slice(0, 8000),
-            meta: m.meta && typeof m.meta === 'object' ? { attachmentName: m.meta.attachmentName } : {},
-            createdAt: m.createdAt || Date.now()
-          };
-        })
-      };
-    }).filter(Boolean);
+    var incoming = normalizeSessions(body.sessions);
+
+    // Load existing and MERGE — a partial client payload must not wipe other sessions
+    var existingRows = await sql`SELECT sessions FROM chat_history WHERE email = ${email} LIMIT 1`;
+    var existing = (existingRows && existingRows[0] && existingRows[0].sessions) ? existingRows[0].sessions : [];
+    if (typeof existing === 'string') {
+      try { existing = JSON.parse(existing); } catch (_) { existing = []; }
+    }
+    if (!Array.isArray(existing)) existing = [];
+
+    var merged = mergeSessions(normalizeSessions(existing), incoming);
 
     await sql`
       INSERT INTO chat_history (email, sessions, updated_at)
-      VALUES (${email}, ${JSON.stringify(sessions)}::jsonb, NOW())
+      VALUES (${email}, ${JSON.stringify(merged)}::jsonb, NOW())
       ON CONFLICT (email) DO UPDATE SET
         sessions = EXCLUDED.sessions,
         updated_at = NOW()
     `;
-    res.status(200).json({ ok: true, count: sessions.length });
+    res.status(200).json({
+      ok: true,
+      count: merged.length,
+      incoming: incoming.length,
+      merged: true
+    });
     return;
   }
 

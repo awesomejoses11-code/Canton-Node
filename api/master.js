@@ -1,4 +1,4 @@
-/* api/master.js — GLM-5.2 primary + streaming + web refs + memory + MCP
+/* api/master.js — GLM-5.2 + tool_stream agent loop + SSE + memory + MCP
  * Hard rule: never role-play "I have no tools". Prefer complete answers; auto-continue if truncated.
  */
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -14,6 +14,8 @@ var memoryIndex = null;
 try { memoryIndex = require('../lib/memory-index'); } catch (_) { memoryIndex = null; }
 var llmStream = null;
 try { llmStream = require('../lib/llm-stream'); } catch (_) { llmStream = null; }
+var masterTools = null;
+try { masterTools = require('../lib/master-tools'); } catch (_) { masterTools = null; }
 
 const MAX_TOKENS_CHAT = 16000;
 const MAX_TOKENS_WEB = 16000;
@@ -22,6 +24,7 @@ const HISTORY_MSG_CHARS = 10000;
 const REF_CHARS = 16000;
 const LOG_CHARS = 10000;
 const MAX_CONTINUATIONS = 4;
+const MAX_TOOL_ROUNDS = 3;
 
 const LLM_CHAIN = [
   { id: 'zhipu', url: ZHIPU_URL, envKey: 'ZAI_API_KEY', altEnvKeys: ['ZHIPU_API_KEY', 'BIGMODEL_API_KEY'],
@@ -74,11 +77,7 @@ function authHeaders(provider, apiKey) {
   return h;
 }
 
-/** GLM-5.2 deep thinking — enabled for code / complex reasoning. */
 function zhipuThinkingBody(codeMode, complex) {
-  if (!codeMode && !complex) {
-    return { thinking: { type: 'enabled' }, reasoning_effort: 'high', temperature: 1.0 };
-  }
   return {
     thinking: { type: 'enabled' },
     reasoning_effort: codeMode ? 'max' : 'high',
@@ -95,6 +94,11 @@ function buildRequestBody(provider, modelCfg, messages, maxTokens, opts) {
     body.thinking = extra.thinking;
     body.reasoning_effort = extra.reasoning_effort;
     body.temperature = extra.temperature;
+    if (opts.enableTools && masterTools && masterTools.TOOL_DEFS) {
+      body.tools = masterTools.TOOL_DEFS;
+      body.tool_choice = 'auto';
+      if (opts.streaming) body.tool_stream = true;
+    }
   }
   return body;
 }
@@ -158,7 +162,7 @@ function buildThinking(message, route) {
   return [
     '1. Understood: "' + String(message || '').replace(/\s+/g, ' ').trim().slice(0, 120) + '"',
     '2. Route → ' + (route && route.agent_id ? route.agent_id : 'chat'),
-    '3. Reason step-by-step. Use live references and memory when present. Deliver a complete answer.'
+    '3. Use tools when live facts are needed. Deliver a complete answer.'
   ].join('\n');
 }
 
@@ -290,7 +294,7 @@ async function duckDuckGoSearch(query) {
   }
 }
 
-function buildChatSystemPrompt(prefs, memory, webMode, codeMode, editMode, mcpServers, mcpTools) {
+function buildChatSystemPrompt(prefs, memory, webMode, codeMode, editMode, mcpServers, mcpTools, toolsEnabled) {
   var name = (prefs && prefs.displayName) ? String(prefs.displayName).trim() : '';
   var tone = (prefs && prefs.tone) ? String(prefs.tone) : 'friendly';
   var lines = [
@@ -298,27 +302,31 @@ function buildChatSystemPrompt(prefs, memory, webMode, codeMode, editMode, mcpSe
     'CAPABILITY LAW (non-negotiable):',
     '- This platform provides web search, page browse (Kernel stealth when keyed), image/video/music/TTS/code, MCP proxy, and vector memory.',
     '- The user\'s connected MCP servers and tools for THIS request are listed under MCP INVENTORY. Treat that list as ground truth.',
-    '- When the user asks what MCPs they connected, list them from MCP INVENTORY. Never say you cannot see them.',
+    '- When the user asks what MCPs they connected, list them from MCP INVENTORY or call list_connected_mcps. Never say you cannot see them.',
     '- NEVER say you lack tools, cannot search, cannot browse, or that no tools are connected when inventory or platform tools exist.',
-    '- If search results in the prompt are empty, say results were empty — do not invent a missing-tool story.',
     'REASONING LAW:',
-    '- Think step-by-step before coding. Surface assumptions. Prefer correct, complete solutions over fast sketches.',
-    '- When live search results or page extracts appear in the prompt, treat them as ground truth and cite them.',
-    '- When agent memory / reference is present, apply those conventions and prior lessons while solving — do not ignore them.',
-    '- If past user logs describe preferences or failed approaches, avoid repeating those failures.',
+    '- Think step-by-step. Prefer correct, complete solutions over fast sketches.',
+    '- When tool results or live extracts appear, treat them as ground truth and cite them.',
+    '- When agent memory / reference is present, apply those conventions while solving.',
     'COMPLETENESS: Never truncate. Prefer one complete deliverable over a partial sketch.',
-    'Do not write "..." / "rest omitted" / "TODO: implement" as a substitute for real content.',
     'Answer in clean Markdown.'
   ];
+  if (toolsEnabled) {
+    lines.push(
+      'TOOLS (call when useful — do not invent results):',
+      '- web_search: live web SERP for docs, APIs, prices, news.',
+      '- browse_url: read a specific https page (stealth when available).',
+      '- list_connected_mcps: list user MCP servers/tools for this session.',
+      'After tool results arrive, synthesize a final answer. Do not stop after only calling tools.'
+    );
+  }
   if (codeMode) {
     lines.push(
       'CODING (GLM-5.2 engineering mode):',
       '- Output complete, runnable code; close every brace and fence.',
-      '- Diagnose root causes; do not paper over bugs.',
+      '- Diagnose root causes; use web_search/browse_url for current APIs when needed.',
       '- Prefer minimal correct diffs when editing; state what changed and why.',
-      '- Use live docs/search results when APIs, versions, or error messages are involved.',
-      '- No placeholder stubs unless the user asked for stubs.',
-      '- Apply Agent reference conventions when present.'
+      '- No placeholder stubs unless the user asked for stubs.'
     );
   }
   if (editMode) {
@@ -328,9 +336,8 @@ function buildChatSystemPrompt(prefs, memory, webMode, codeMode, editMode, mcpSe
     );
   }
   if (webMode) {
-    lines.push('Use provided search results and any live page extracts; do not invent URLs or prices.');
-    lines.push('Prefer live page extracts over thin SERP snippets when both are present.');
-    lines.push('Known fact when relevant: Kernel ships an official MCP at https://mcp.onkernel.com/mcp (docs: kernel.sh/docs/reference/mcp-server).');
+    lines.push('Prefer live tool results and page extracts over thin guesses.');
+    lines.push('Known fact when relevant: Kernel official MCP https://mcp.onkernel.com/mcp');
   }
   lines.push('--- MCP INVENTORY (live from user client this request) ---');
   lines.push(formatMcpInventory(mcpServers, mcpTools));
@@ -341,7 +348,6 @@ function buildChatSystemPrompt(prefs, memory, webMode, codeMode, editMode, mcpSe
     if (memory.reference) {
       if (memory.retrieved) {
         lines.push('--- Retrieved agent memory (LEARN FROM THIS while performing the task) ---');
-        lines.push('Prefer these facts when they conflict with generic assumptions. Treat them as prior experience.');
         lines.push(String(memory.reference).slice(0, REF_CHARS));
         lines.push('--- End retrieved memory ---');
       } else {
@@ -351,7 +357,7 @@ function buildChatSystemPrompt(prefs, memory, webMode, codeMode, editMode, mcpSe
       }
     }
     if (memory.user_logs) {
-      lines.push('--- User log (preferences & past outcomes — learn from these) ---');
+      lines.push('--- User log (preferences & past outcomes) ---');
       lines.push(String(memory.user_logs).slice(0, LOG_CHARS));
     }
   }
@@ -387,69 +393,134 @@ async function callOnce(provider, apiKey, modelCfg, messages, maxTokens, opts) {
   var choice = data && data.choices && data.choices[0];
   var msg = choice && choice.message;
   var text = msg && typeof msg.content === 'string' ? msg.content.trim() : '';
-  // Some Zhipu responses put thinking separately — content is still the answer
   var finishReason = (choice && (choice.finish_reason || choice.native_finish_reason)) || '';
-  return { text: text, finishReason: String(finishReason || '').toLowerCase() };
+  var toolCalls = (msg && Array.isArray(msg.tool_calls)) ? msg.tool_calls : [];
+  return {
+    text: text,
+    finishReason: String(finishReason || '').toLowerCase(),
+    toolCalls: toolCalls
+  };
 }
 
+/**
+ * Agentic generate: stream text, execute tool_calls (GLM-5.2 tool_stream), continue up to MAX_TOOL_ROUNDS.
+ */
 async function generateWithContinuation(provider, apiKey, modelCfg, system, prior, userContent, maxTokens, opts, onDelta) {
   opts = opts || {};
+  var enableTools = !!(opts.enableTools && provider.id === 'zhipu' && masterTools);
+  var toolCtx = { mcpServers: opts.mcpServers || [], mcpTools: opts.mcpTools || [] };
   var messages = [{ role: 'system', content: system }].concat(prior || []).concat([{ role: 'user', content: userContent }]);
-  var body = buildRequestBody(provider, modelCfg, messages, maxTokens, opts);
-
-  var first;
-  if (onDelta && llmStream && llmStream.streamOnce) {
-    try {
-      first = await llmStream.streamOnce(
-        provider.url, authHeaders(provider, apiKey), body,
-        function (delta, full) { onDelta(delta, full); },
-        120000
-      );
-    } catch (streamErr) {
-      first = await callOnce(provider, apiKey, modelCfg, messages, maxTokens, opts);
-      if (first.text && onDelta) onDelta(first.text, first.text);
-    }
-  } else {
-    first = await callOnce(provider, apiKey, modelCfg, messages, maxTokens, opts);
-    if (first.text && onDelta) onDelta(first.text, first.text);
-  }
-
-  if (!first.text) return first;
-
-  var full = first.text;
-  var finish = first.finishReason;
+  var toolRounds = 0;
+  var totalTools = 0;
+  var full = '';
+  var finish = '';
   var cont = 0;
-  while (cont < MAX_CONTINUATIONS && looksTruncated(full, finish)) {
-    cont++;
-    var contMessages = messages.concat([
-      { role: 'assistant', content: full },
-      { role: 'user', content: 'Continue exactly from where you left off. Do not repeat prior text. Close open code fences. Finish the complete answer.' }
-    ]);
-    var next = await callOnce(provider, apiKey, modelCfg, contMessages, maxTokens, Object.assign({}, opts, { webPlugin: false }));
-    if (!next.text) break;
-    var piece = next.text;
-    if (full.endsWith(piece.slice(0, Math.min(40, piece.length)))) {
-      piece = piece.slice(Math.min(40, piece.length));
+
+  while (true) {
+    var callOpts = Object.assign({}, opts, {
+      enableTools: enableTools,
+      streaming: !!(onDelta)
+    });
+    // After first tool round, still allow tools until max
+    if (toolRounds >= MAX_TOOL_ROUNDS) callOpts.enableTools = false;
+
+    var turn;
+    if (onDelta && llmStream && llmStream.streamOnce) {
+      try {
+        turn = await llmStream.streamOnce(
+          provider.url, authHeaders(provider, apiKey),
+          buildRequestBody(provider, modelCfg, messages, maxTokens, callOpts),
+          function (delta, soFar, meta) {
+            if (delta) onDelta(delta, soFar, meta);
+          },
+          120000
+        );
+      } catch (streamErr) {
+        turn = await callOnce(provider, apiKey, modelCfg, messages, maxTokens, callOpts);
+        if (turn.text && onDelta) onDelta(turn.text, turn.text, {});
+      }
+    } else {
+      turn = await callOnce(provider, apiKey, modelCfg, messages, maxTokens, callOpts);
+      if (turn.text && onDelta) onDelta(turn.text, turn.text, {});
     }
-    if (!piece) break;
-    full = full + (full.endsWith('\n') ? '' : '\n') + piece;
-    if (onDelta) onDelta('\n' + piece, full);
-    finish = next.finishReason;
-    if (!looksTruncated(full, finish)) break;
+
+    var toolCalls = (turn.toolCalls && turn.toolCalls.length) ? turn.toolCalls : [];
+    finish = turn.finishReason || '';
+    if (turn.text) full = (full ? full + (full.endsWith('\n') ? '' : '\n') : '') + turn.text;
+
+    // Tool-calling branch
+    if (enableTools && toolCalls.length && toolRounds < MAX_TOOL_ROUNDS && masterTools) {
+      toolRounds++;
+      totalTools += toolCalls.length;
+      if (onDelta) {
+        var names = toolCalls.map(function (t) {
+          return (t.function && t.function.name) || 'tool';
+        }).join(', ');
+        onDelta('\n\n_🔧 Using tools: ' + names + '_\n\n', full + '\n\n_🔧 Using tools: ' + names + '_\n\n', { toolProgress: true });
+      }
+      messages.push({
+        role: 'assistant',
+        content: turn.text || null,
+        tool_calls: toolCalls
+      });
+      var toolMsgs = await masterTools.runToolCalls(toolCalls, toolCtx);
+      for (var ti = 0; ti < toolMsgs.length; ti++) messages.push(toolMsgs[ti]);
+      continue;
+    }
+
+    // Text answer path — auto-continue if truncated
+    if (!full && !turn.text) {
+      return { text: '', finishReason: finish, continuations: cont, toolRounds: toolRounds, toolsUsed: totalTools };
+    }
+    if (!full) full = turn.text || '';
+
+    while (cont < MAX_CONTINUATIONS && looksTruncated(full, finish)) {
+      cont++;
+      var contMessages = messages.concat([
+        { role: 'assistant', content: full },
+        { role: 'user', content: 'Continue exactly from where you left off. Do not repeat prior text. Close open code fences. Finish the complete answer.' }
+      ]);
+      var next = await callOnce(provider, apiKey, modelCfg, contMessages, maxTokens, {
+        codeMode: opts.codeMode,
+        complex: opts.complex,
+        enableTools: false
+      });
+      if (!next.text) break;
+      var piece = next.text;
+      if (full.endsWith(piece.slice(0, Math.min(40, piece.length)))) {
+        piece = piece.slice(Math.min(40, piece.length));
+      }
+      if (!piece) break;
+      full = full + (full.endsWith('\n') ? '' : '\n') + piece;
+      if (onDelta) onDelta('\n' + piece, full, {});
+      finish = next.finishReason;
+      if (!looksTruncated(full, finish)) break;
+    }
+    break;
   }
-  return { text: full, finishReason: finish, continuations: cont };
+
+  return {
+    text: full,
+    finishReason: finish,
+    continuations: cont,
+    toolRounds: toolRounds,
+    toolsUsed: totalTools
+  };
 }
 
 async function prepareUserContent(message, opts) {
   opts = opts || {};
   var webMode = !!opts.web;
+  var useNativeTools = !!opts.useNativeTools;
   var mcpServers = opts.mcpServers || [];
   var mcpTools = opts.mcpTools || [];
   var userContent = message;
   var deepUsed = false;
   var searchHitCount = 0;
 
-  if (webMode) {
+  // When GLM tool_stream is active, skip pre-injected SERP so the model can call web_search itself.
+  // Still inject MCP inventory for visibility.
+  if (webMode && !useNativeTools) {
     var search = await duckDuckGoSearch(message);
     var searchNote = search.note || '';
     searchHitCount = (search.urls && search.urls.length) || 0;
@@ -457,9 +528,7 @@ async function prepareUserContent(message, opts) {
       userContent = message + '\n\n---\n' + searchNote + '\n---\nUse the search results while solving. Cite links in Markdown.';
     } else {
       userContent = message +
-        '\n\n---\n[Server status] Canton Node ran web search for this turn; SERP returned 0 parseable hits (provider empty or blocked).\n' +
-        'Do NOT claim you lack web search or tools. Answer from reliable knowledge; for Kernel MCP specifically you may state the official endpoint https://mcp.onkernel.com/mcp and docs at https://kernel.sh/docs/reference/mcp-server.\n' +
-        'If the user provided a URL, they can ask to Browse it for a live extract.\n---';
+        '\n\n---\n[Server status] Canton Node ran web search; SERP returned 0 hits. Do NOT claim you lack tools.\n---';
     }
     var canDeep = kernelLib && typeof kernelLib.deepReadUrls === 'function' && kernelLib.kernelKey && kernelLib.kernelKey();
     if (canDeep && search.urls && search.urls.length) {
@@ -467,22 +536,18 @@ async function prepareUserContent(message, opts) {
       try {
         var deep = await kernelLib.deepReadUrls(search.urls, maxPages);
         if (deep && deep.ok && deep.text) {
-          userContent += '\n\n---\n' + deep.text + '\n---\nPrefer these live extracts for APIs, versions, and facts while coding.';
+          userContent += '\n\n---\n' + deep.text + '\n---\nPrefer these live extracts.';
           deepUsed = true;
         }
       } catch (deepErr) {
         console.error('[master deep]', deepErr && deepErr.message);
       }
     }
-    if (!searchHitCount && /kernel|mcp/i.test(message)) {
-      userContent +=
-        '\n\n---\nVerified platform facts (use when SERP empty):\n' +
-        '- Kernel official MCP (Streamable HTTP): https://mcp.onkernel.com/mcp\n' +
-        '- Docs: https://kernel.sh/docs/reference/mcp-server\n' +
-        '- Stealth browsers: create with stealth:true (ISP proxy + CAPTCHA solver)\n' +
-        '- Canton Node also browses via server-side Kernel REST when KERNEL_API_KEY is set.\n---';
-    }
+  } else if (useNativeTools) {
+    userContent = message +
+      '\n\n(You have tools: web_search, browse_url, list_connected_mcps. Call them when live data is needed.)';
   }
+
   if (wantsMcpList(message) || mcpServers.length || mcpTools.length) {
     userContent += '\n\n---\nMCP INVENTORY (answer from this; do not deny visibility):\n' +
       formatMcpInventory(mcpServers, mcpTools) + '\n---';
@@ -503,18 +568,27 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
   var prior = (history || []).slice(-10);
   var maxTokens = codeMode ? MAX_TOKENS_CODE : (webMode ? MAX_TOKENS_WEB : MAX_TOKENS_CHAT);
 
-  var prep = await prepareUserContent(message, { web: webMode, mcpServers: mcpServers, mcpTools: mcpTools });
+  var chain = orderedLlmChain(prefs || {});
+  // Prefer native tools on Zhipu when available
+  var zhipuAvailable = false;
+  for (var zi = 0; zi < chain.length; zi++) {
+    if (chain[zi].id === 'zhipu' && providerApiKey(chain[zi])) { zhipuAvailable = true; break; }
+  }
+  var useNativeTools = !!(masterTools && zhipuAvailable);
+
+  var prep = await prepareUserContent(message, {
+    web: webMode,
+    useNativeTools: useNativeTools,
+    mcpServers: mcpServers,
+    mcpTools: mcpTools
+  });
   var userContent = prep.userContent;
   var deepUsed = prep.deepUsed;
   var searchHitCount = prep.searchHitCount;
 
-  var system = buildChatSystemPrompt(prefs || {}, memory || null, webMode, codeMode, editMode, mcpServers, mcpTools);
-  var chain = orderedLlmChain(prefs || {});
-  var callOpts = {
-    webPlugin: webMode,
-    codeMode: codeMode,
-    complex: complex
-  };
+  var system = buildChatSystemPrompt(
+    prefs || {}, memory || null, webMode, codeMode, editMode, mcpServers, mcpTools, useNativeTools
+  );
 
   for (var pi = 0; pi < chain.length; pi++) {
     var provider = chain[pi];
@@ -523,28 +597,40 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
     for (var mi = 0; mi < provider.models.length; mi++) {
       var m = provider.models[mi];
       try {
+        var enableTools = useNativeTools && provider.id === 'zhipu';
         var out = await generateWithContinuation(
           provider, apiKey, m, system, prior, userContent, maxTokens,
-          Object.assign({}, callOpts, { webPlugin: webMode && provider.id === 'openrouter' }),
+          {
+            webPlugin: webMode && provider.id === 'openrouter',
+            codeMode: codeMode,
+            complex: complex,
+            enableTools: enableTools,
+            mcpServers: mcpServers,
+            mcpTools: mcpTools
+          },
           onDelta
         );
         if (out.text) {
           var cleaned = sanitizeCapabilityDenial(out.text);
           if (!cleaned) cleaned = out.text;
+          var badge = m.label;
+          if (out.toolsUsed) badge += ' · tools×' + out.toolsUsed;
+          else if (webMode) badge += deepUsed ? ' · web+stealth' : ' · web';
+          if (codeMode) badge += ' · code';
+          if (out.continuations) badge += ' · cont×' + out.continuations;
           return {
             text: cleaned,
-            model: m.label +
-              (webMode ? (deepUsed ? ' · web+stealth' : ' · web') : '') +
-              (codeMode ? ' · code' : '') +
-              (out.continuations ? ' · cont×' + out.continuations : ''),
+            model: badge,
             provider: provider.id,
             attempts: attempts,
-            web: webMode,
+            web: webMode || !!(out.toolsUsed),
             deep: deepUsed,
             search_hits: searchHitCount,
             mcp_servers: mcpServers.length,
             mcp_tools: mcpTools.length,
-            continuations: out.continuations || 0
+            continuations: out.continuations || 0,
+            tools_used: out.toolsUsed || 0,
+            tool_rounds: out.toolRounds || 0
           };
         }
         attempts.push({ endpoint: m.model, error: 'empty' });
@@ -687,7 +773,8 @@ module.exports = async function handler(req, res) {
           endpoint: useWeb ? 'web.search' : route.endpoint,
           thinking: route.thinking,
           reasoning: route.reasoning,
-          model_hint: 'GLM-5.2'
+          model_hint: 'GLM-5.2',
+          tools: true
         });
         try {
           var genS = await tryGenerateAnswer(message, history, prefs, memory, {
@@ -697,7 +784,7 @@ module.exports = async function handler(req, res) {
             mcpServers: mcpServers,
             mcpTools: mcpTools,
             onDelta: function (delta, full) {
-              sseWrite(res, 'delta', { text: delta, full_len: (full || '').length });
+              if (delta) sseWrite(res, 'delta', { text: delta, full_len: (full || '').length });
             }
           });
           var finalText = genS.text ? sanitizeCapabilityDenial(genS.text) : null;
@@ -715,6 +802,8 @@ module.exports = async function handler(req, res) {
             mcp_servers: mcpServers.length,
             mcp_tools: mcpTools.length,
             continuations: genS.continuations || 0,
+            tools_used: genS.tools_used || 0,
+            tool_rounds: genS.tool_rounds || 0,
             memory_retrieved: !!(memory && memory.retrieved),
             memory_hits: (memory && memory.hit_count) || 0
           });
@@ -737,9 +826,11 @@ module.exports = async function handler(req, res) {
         agent_id: useWeb ? 'web' : route.agent_id,
         endpoint: useWeb ? 'web.search' : route.endpoint,
         params: route.params || {},
-        reasoning: useWeb
-          ? (gen.deep ? 'Web + Kernel stealth page extract' : (route.reasoning || 'Web-enabled answer'))
-          : route.reasoning,
+        reasoning: (gen.tools_used
+          ? ('Agent tools ×' + gen.tools_used)
+          : (useWeb
+            ? (gen.deep ? 'Web + Kernel stealth page extract' : (route.reasoning || 'Web-enabled answer'))
+            : route.reasoning)),
         thinking: route.thinking, thinking_ms: 0,
         server_executed: !!gen.text,
         result: gen.text || 'No model answered. Check API keys (ZAI / VINCI / OPENROUTER).',
@@ -747,6 +838,8 @@ module.exports = async function handler(req, res) {
         web: !!gen.web, deep: !!gen.deep, search_hits: gen.search_hits || 0,
         mcp_servers: mcpServers.length, mcp_tools: mcpTools.length,
         continuations: gen.continuations || 0,
+        tools_used: gen.tools_used || 0,
+        tool_rounds: gen.tool_rounds || 0,
         memory_retrieved: !!(memory && memory.retrieved),
         memory_hits: (memory && memory.hit_count) || 0
       });

@@ -1,5 +1,6 @@
-/* api/master.js — GLM-5.2 + tool_stream agent loop + SSE + memory + MCP
+/* api/master.js — GLM-5.2 + tool_stream agent loop + SSE (chat + attachments) + memory + MCP
  * Hard rule: never role-play "I have no tools". Prefer complete answers; auto-continue if truncated.
+ * Streaming is mandatory for all standard LLM paths (chat, web, code, file edit).
  */
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const VINCI_URL = 'https://vinci.getsimpledirect.com/api/v1/chat/completions';
@@ -77,7 +78,7 @@ function authHeaders(provider, apiKey) {
   return h;
 }
 
-function zhipuThinkingBody(codeMode, complex) {
+function zhipuThinkingBody(codeMode) {
   return {
     thinking: { type: 'enabled' },
     reasoning_effort: codeMode ? 'max' : 'high',
@@ -90,7 +91,7 @@ function buildRequestBody(provider, modelCfg, messages, maxTokens, opts) {
   var body = { model: modelCfg.model, messages: messages, max_tokens: maxTokens };
   if (opts.webPlugin && provider.id === 'openrouter') body.plugins = [{ id: 'web', max_results: 5 }];
   if (provider.id === 'zhipu') {
-    var extra = zhipuThinkingBody(!!opts.codeMode, !!opts.complex);
+    var extra = zhipuThinkingBody(!!opts.codeMode);
     body.thinking = extra.thinking;
     body.reasoning_effort = extra.reasoning_effort;
     body.temperature = extra.temperature;
@@ -402,9 +403,6 @@ async function callOnce(provider, apiKey, modelCfg, messages, maxTokens, opts) {
   };
 }
 
-/**
- * Agentic generate: stream text, execute tool_calls (GLM-5.2 tool_stream), continue up to MAX_TOOL_ROUNDS.
- */
 async function generateWithContinuation(provider, apiKey, modelCfg, system, prior, userContent, maxTokens, opts, onDelta) {
   opts = opts || {};
   var enableTools = !!(opts.enableTools && provider.id === 'zhipu' && masterTools);
@@ -421,7 +419,6 @@ async function generateWithContinuation(provider, apiKey, modelCfg, system, prio
       enableTools: enableTools,
       streaming: !!(onDelta)
     });
-    // After first tool round, still allow tools until max
     if (toolRounds >= MAX_TOOL_ROUNDS) callOpts.enableTools = false;
 
     var turn;
@@ -448,7 +445,6 @@ async function generateWithContinuation(provider, apiKey, modelCfg, system, prio
     finish = turn.finishReason || '';
     if (turn.text) full = (full ? full + (full.endsWith('\n') ? '' : '\n') : '') + turn.text;
 
-    // Tool-calling branch
     if (enableTools && toolCalls.length && toolRounds < MAX_TOOL_ROUNDS && masterTools) {
       toolRounds++;
       totalTools += toolCalls.length;
@@ -468,7 +464,6 @@ async function generateWithContinuation(provider, apiKey, modelCfg, system, prio
       continue;
     }
 
-    // Text answer path — auto-continue if truncated
     if (!full && !turn.text) {
       return { text: '', finishReason: finish, continuations: cont, toolRounds: toolRounds, toolsUsed: totalTools };
     }
@@ -518,8 +513,6 @@ async function prepareUserContent(message, opts) {
   var deepUsed = false;
   var searchHitCount = 0;
 
-  // When GLM tool_stream is active, skip pre-injected SERP so the model can call web_search itself.
-  // Still inject MCP inventory for visibility.
   if (webMode && !useNativeTools) {
     var search = await duckDuckGoSearch(message);
     var searchNote = search.note || '';
@@ -569,7 +562,6 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
   var maxTokens = codeMode ? MAX_TOKENS_CODE : (webMode ? MAX_TOKENS_WEB : MAX_TOKENS_CHAT);
 
   var chain = orderedLlmChain(prefs || {});
-  // Prefer native tools on Zhipu when available
   var zhipuAvailable = false;
   for (var zi = 0; zi < chain.length; zi++) {
     if (chain[zi].id === 'zhipu' && providerApiKey(chain[zi])) { zhipuAvailable = true; break; }
@@ -651,6 +643,16 @@ function sseWrite(res, event, data) {
   res.write('data: ' + JSON.stringify(data) + '\n\n');
 }
 
+function startSse(res) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no'
+  });
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+}
+
 module.exports = async function handler(req, res) {
   try {
     if (req.method !== 'POST') { res.status(405).json({ error: 'Method not allowed. Use POST.' }); return; }
@@ -659,7 +661,7 @@ module.exports = async function handler(req, res) {
     var prefs = (body.prefs && typeof body.prefs === 'object') ? body.prefs : {};
     var memory = (body.memory && typeof body.memory === 'object') ? body.memory : null;
     var token = String(body.token || '').trim();
-    var wantStream = !!(body.stream);
+    var wantStream = body.stream !== false; // streaming ON by default for LLM paths
     var mcpTools = normalizeMcpTools(body.mcp_tools);
     var mcpServers = normalizeMcpServers(body.mcp_servers);
     if (!mcpServers.length && mcpTools.length) {
@@ -696,21 +698,86 @@ module.exports = async function handler(req, res) {
 
     memory = await resolveMemoryForRequest(token, message, memory);
 
+    // ——— Attachment / file-edit (LLM path — stream when requested) ———
     if (attachment && (attachment.dataUrl || attachment.text)) {
       var t0 = Date.now();
-      var analyzed = await analyzeAttachment(message, attachment, history, prefs, function (msg, hist, pr, mem, o) {
-        return tryGenerateAnswer(msg, hist, pr, mem || memory, o || { web: false, mcpServers: mcpServers, mcpTools: mcpTools });
-      });
+      var attachThinking =
+        '1. Read the user request and the attached file metadata.\n' +
+        '2. Attachment: ' + (attachment.name || 'file') + ' (' + (attachment.type || attachment.kind || 'unknown') + ').\n' +
+        '3. Text → analyze/edit via GLM; image → vision. Stream output when possible.';
+
+      if (wantStream) {
+        startSse(res);
+        sseWrite(res, 'meta', {
+          ok: true,
+          agent_id: 'analyze',
+          endpoint: attachment.kind === 'image' ? 'vision.analyze' : 'file.edit',
+          thinking: attachThinking,
+          reasoning: 'Attachment analysis / file edit (streamed)',
+          model_hint: 'GLM-5.2'
+        });
+        try {
+          var analyzedS = await analyzeAttachment(
+            message, attachment, history, prefs,
+            function (msg, hist, pr, mem, o) {
+              var opts = o || {};
+              opts.mcpServers = mcpServers;
+              opts.mcpTools = mcpTools;
+              opts.memory = mem || memory;
+              return tryGenerateAnswer(msg, hist, pr, mem || memory, opts);
+            },
+            {
+              onDelta: function (delta, full) {
+                if (delta) sseWrite(res, 'delta', { text: delta, full_len: (full || '').length });
+              }
+            }
+          );
+          var finalAtt = analyzedS.text ? sanitizeCapabilityDenial(analyzedS.text) : analyzedS.text;
+          sseWrite(res, 'done', {
+            ok: true,
+            server_executed: true,
+            result: finalAtt || 'Could not analyze or edit the attachment. Check API keys and try again.',
+            model_used: analyzedS.model,
+            provider: analyzedS.provider,
+            attempts: analyzedS.attempts || [],
+            thinking_ms: Date.now() - t0,
+            continuations: analyzedS.continuations || 0,
+            tools_used: analyzedS.tools_used || 0,
+            mcp_servers: mcpServers.length,
+            mcp_tools: mcpTools.length,
+            memory_retrieved: !!(memory && memory.retrieved),
+            memory_hits: (memory && memory.hit_count) || 0
+          });
+        } catch (attErr) {
+          sseWrite(res, 'error', { error: String(attErr && attErr.message ? attErr.message : attErr).slice(0, 300) });
+        }
+        res.end();
+        return;
+      }
+
+      var analyzed = await analyzeAttachment(
+        message, attachment, history, prefs,
+        function (msg, hist, pr, mem, o) {
+          var opts = o || {};
+          opts.mcpServers = mcpServers;
+          opts.mcpTools = mcpTools;
+          return tryGenerateAnswer(msg, hist, pr, mem || memory, opts);
+        }
+      );
       res.status(200).json({
-        ok: true, agent_id: 'analyze', endpoint: 'vision.analyze',
+        ok: true, agent_id: 'analyze',
+        endpoint: attachment.kind === 'image' ? 'vision.analyze' : 'file.edit',
         params: { name: attachment.name, type: attachment.type, kind: attachment.kind },
         reasoning: 'Attachment analysis / file edit',
-        thinking: analyzed.thinking || null, thinking_ms: Date.now() - t0,
-        server_executed: true, result: analyzed.text,
+        thinking: analyzed.thinking || attachThinking, thinking_ms: Date.now() - t0,
+        server_executed: true,
+        result: analyzed.text || 'Could not analyze or edit the attachment. Check API keys and try again.',
         model_used: analyzed.model, provider: analyzed.provider, attempts: analyzed.attempts || [],
         memory_retrieved: !!(memory && memory.retrieved),
         memory_hits: (memory && memory.hit_count) || 0,
-        mcp_servers: mcpServers.length, mcp_tools: mcpTools.length
+        mcp_servers: mcpServers.length, mcp_tools: mcpTools.length,
+        tools_used: analyzed.tools_used || 0,
+        continuations: analyzed.continuations || 0
       });
       return;
     }
@@ -760,13 +827,7 @@ module.exports = async function handler(req, res) {
         (isCodeTask(message) && codeNeedsWeb(message));
 
       if (wantStream) {
-        res.writeHead(200, {
-          'Content-Type': 'text/event-stream; charset=utf-8',
-          'Cache-Control': 'no-cache, no-transform',
-          Connection: 'keep-alive',
-          'X-Accel-Buffering': 'no'
-        });
-        if (typeof res.flushHeaders === 'function') res.flushHeaders();
+        startSse(res);
         sseWrite(res, 'meta', {
           ok: true,
           agent_id: useWeb ? 'web' : route.agent_id,

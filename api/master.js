@@ -1,4 +1,4 @@
-/* api/master.js — chat + attachment + file-edit + vector memory + stealth web + MCP + SSE stream
+/* api/master.js — GLM-5.2 primary + streaming + web refs + memory + MCP
  * Hard rule: never role-play "I have no tools". Prefer complete answers; auto-continue if truncated.
  */
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -15,17 +15,17 @@ try { memoryIndex = require('../lib/memory-index'); } catch (_) { memoryIndex = 
 var llmStream = null;
 try { llmStream = require('../lib/llm-stream'); } catch (_) { llmStream = null; }
 
-const MAX_TOKENS_CHAT = 12000;
-const MAX_TOKENS_WEB = 12000;
-const MAX_TOKENS_CODE = 16000;
-const HISTORY_MSG_CHARS = 8000;
-const REF_CHARS = 12000;
-const LOG_CHARS = 8000;
+const MAX_TOKENS_CHAT = 16000;
+const MAX_TOKENS_WEB = 16000;
+const MAX_TOKENS_CODE = 32000;
+const HISTORY_MSG_CHARS = 10000;
+const REF_CHARS = 16000;
+const LOG_CHARS = 10000;
 const MAX_CONTINUATIONS = 4;
 
 const LLM_CHAIN = [
   { id: 'zhipu', url: ZHIPU_URL, envKey: 'ZAI_API_KEY', altEnvKeys: ['ZHIPU_API_KEY', 'BIGMODEL_API_KEY'],
-    models: [{ model: 'glm-5', label: 'GLM-5' }] },
+    models: [{ model: 'glm-5.2', label: 'GLM-5.2' }] },
   { id: 'vinci', url: VINCI_URL, envKey: 'VINCI_API_KEY', models: [{ model: 'forte', label: 'Vinci Forte' }] },
   { id: 'openrouter', url: OPENROUTER_URL, envKey: 'OPENROUTER_API_KEY', models: [
     { model: 'meta-llama/llama-3.3-70b-instruct:free', label: 'OR Llama 3.3' },
@@ -47,7 +47,10 @@ function providerApiKey(provider) {
 
 function orderedLlmChain(prefs) {
   var preferred = String((prefs && (prefs.llmProvider || prefs.chatModel)) || 'auto').toLowerCase().trim();
-  var alias = { glm: 'zhipu', 'glm-5': 'zhipu', zai: 'zhipu', bigmodel: 'zhipu', or: 'openrouter' };
+  var alias = {
+    glm: 'zhipu', 'glm-5': 'zhipu', 'glm-5.2': 'zhipu', 'glm5': 'zhipu', 'glm5.2': 'zhipu',
+    zai: 'zhipu', bigmodel: 'zhipu', or: 'openrouter'
+  };
   if (alias[preferred]) preferred = alias[preferred];
   var chain = LLM_CHAIN.slice();
   if (!preferred || preferred === 'auto') return chain;
@@ -69,6 +72,31 @@ function authHeaders(provider, apiKey) {
     h['X-Title'] = 'Canton Node';
   }
   return h;
+}
+
+/** GLM-5.2 deep thinking — enabled for code / complex reasoning. */
+function zhipuThinkingBody(codeMode, complex) {
+  if (!codeMode && !complex) {
+    return { thinking: { type: 'enabled' }, reasoning_effort: 'high', temperature: 1.0 };
+  }
+  return {
+    thinking: { type: 'enabled' },
+    reasoning_effort: codeMode ? 'max' : 'high',
+    temperature: 1.0
+  };
+}
+
+function buildRequestBody(provider, modelCfg, messages, maxTokens, opts) {
+  opts = opts || {};
+  var body = { model: modelCfg.model, messages: messages, max_tokens: maxTokens };
+  if (opts.webPlugin && provider.id === 'openrouter') body.plugins = [{ id: 'web', max_results: 5 }];
+  if (provider.id === 'zhipu') {
+    var extra = zhipuThinkingBody(!!opts.codeMode, !!opts.complex);
+    body.thinking = extra.thinking;
+    body.reasoning_effort = extra.reasoning_effort;
+    body.temperature = extra.temperature;
+  }
+  return body;
 }
 
 function normalizeMcpTools(raw) {
@@ -130,13 +158,18 @@ function buildThinking(message, route) {
   return [
     '1. Understood: "' + String(message || '').replace(/\s+/g, ' ').trim().slice(0, 120) + '"',
     '2. Route → ' + (route && route.agent_id ? route.agent_id : 'chat'),
-    '3. Deliver a complete, non-truncated final answer. Never claim missing tools or invisible MCPs.'
+    '3. Reason step-by-step. Use live references and memory when present. Deliver a complete answer.'
   ].join('\n');
 }
 
 function wantsWeb(message) {
   var m = String(message || '').toLowerCase();
   return /\b(web search|search the web|google|look up|lookup|latest|current|news|price of|coingecko|research|does .+ have|is there an?|official (docs?|site)|mcp server|kernel mcp|use (the )?web|use (the )?kernel)\b/.test(m);
+}
+
+function codeNeedsWeb(message) {
+  var m = String(message || '').toLowerCase();
+  return /\b(docs?|documentation|api reference|changelog|npm|pypi|crates\.io|github|stackoverflow|error|exception|stack.?trace|latest version|how (do i|to)|sdk|library|framework|compatibility|deprecated)\b/.test(m);
 }
 
 function wantsDeepWeb(message) {
@@ -151,12 +184,18 @@ function wantsMcpList(message) {
 
 function isCodeTask(message) {
   var m = String(message || '').toLowerCase();
-  return /\b(code|coding|script|function|class|refactor|bug|debug|implement|edit|fix|modify|patch|javascript|typescript|python)\b/.test(m);
+  return /\b(code|coding|script|function|class|refactor|bug|debug|implement|edit|fix|modify|patch|javascript|typescript|python|rust|go\b|java\b|sql|regex|algorithm|optimize|unit test|compile|runtime|stack trace|exception)\b/.test(m);
 }
 
 function isEditTask(message) {
   var m = String(message || '').toLowerCase();
   return /\b(edit|fix|modify|refactor|rewrite|update|change|patch|correct|repair|improve)\b/.test(m);
+}
+
+function isComplexTask(message) {
+  var m = String(message || '').toLowerCase();
+  return isCodeTask(m) || isEditTask(m) ||
+    /\b(architect|design system|migrate|multi-?step|plan then|root cause|diagnose|trade-?off)\b/.test(m);
 }
 
 function looksTruncated(text, finishReason) {
@@ -202,7 +241,7 @@ function heuristicRoute(message, mcpTools) {
   if ((/\b(browse|visit|scrape)\b/.test(m) && /https?:\/\//.test(message)) ||
       (/\b(kernel|stealth)\b/.test(m) && /https?:\/\//.test(message)))
     return { agent_id: 'browse', endpoint: 'kernel.browse', params: { prompt: message }, reasoning: 'Heuristic: browse' };
-  if (wantsWeb(message))
+  if (wantsWeb(message) || (isCodeTask(message) && codeNeedsWeb(message)))
     return { agent_id: 'web', endpoint: 'web.search', params: { prompt: message, web: true }, reasoning: 'Heuristic: web' };
   if (wantsMcpList(message))
     return { agent_id: 'chat', endpoint: 'chat.answer', params: { prompt: message }, reasoning: 'Heuristic: MCP inventory' };
@@ -255,27 +294,38 @@ function buildChatSystemPrompt(prefs, memory, webMode, codeMode, editMode, mcpSe
   var name = (prefs && prefs.displayName) ? String(prefs.displayName).trim() : '';
   var tone = (prefs && prefs.tone) ? String(prefs.tone) : 'friendly';
   var lines = [
-    'You are the Canton Node Master Agent — a multi-tool assistant on a live platform.',
+    'You are the Canton Node Master Agent powered primarily by GLM-5.2 — a senior engineer and problem-solver.',
     'CAPABILITY LAW (non-negotiable):',
-    '- This platform provides web search, page browse (Kernel stealth when keyed), image/video/music/TTS/code, MCP proxy, and memory.',
-    '- The user\'s connected MCP servers and tools for THIS request are listed below under MCP INVENTORY. Treat that list as ground truth.',
+    '- This platform provides web search, page browse (Kernel stealth when keyed), image/video/music/TTS/code, MCP proxy, and vector memory.',
+    '- The user\'s connected MCP servers and tools for THIS request are listed under MCP INVENTORY. Treat that list as ground truth.',
     '- When the user asks what MCPs they connected, list them from MCP INVENTORY. Never say you cannot see them.',
     '- NEVER say you lack tools, cannot search, cannot browse, or that no tools are connected when inventory or platform tools exist.',
-    '- NEVER write "I don\'t have access to MCP/web/browse" or "responding as text only".',
     '- If search results in the prompt are empty, say results were empty — do not invent a missing-tool story.',
-    '- MCP tools are executed via the client Execute button / MCP panel; you may recommend a specific tool by server + name.',
+    'REASONING LAW:',
+    '- Think step-by-step before coding. Surface assumptions. Prefer correct, complete solutions over fast sketches.',
+    '- When live search results or page extracts appear in the prompt, treat them as ground truth and cite them.',
+    '- When agent memory / reference is present, apply those conventions and prior lessons while solving — do not ignore them.',
+    '- If past user logs describe preferences or failed approaches, avoid repeating those failures.',
     'COMPLETENESS: Never truncate. Prefer one complete deliverable over a partial sketch.',
     'Do not write "..." / "rest omitted" / "TODO: implement" as a substitute for real content.',
     'Answer in clean Markdown.'
   ];
   if (codeMode) {
-    lines.push('CODING: Output complete runnable code; close every brace and fence.',
-      'No placeholder stubs unless the user asked for stubs.',
-      'Apply Agent reference conventions when present.');
+    lines.push(
+      'CODING (GLM-5.2 engineering mode):',
+      '- Output complete, runnable code; close every brace and fence.',
+      '- Diagnose root causes; do not paper over bugs.',
+      '- Prefer minimal correct diffs when editing; state what changed and why.',
+      '- Use live docs/search results when APIs, versions, or error messages are involved.',
+      '- No placeholder stubs unless the user asked for stubs.',
+      '- Apply Agent reference conventions when present.'
+    );
   }
   if (editMode) {
-    lines.push('FILE EDIT (mandatory): Apply the requested edits. Returning the original unchanged is a failure.',
-      'Output the COMPLETE modified file in one fenced code block, then short bullets of what changed.');
+    lines.push(
+      'FILE EDIT (mandatory): Apply the requested edits. Returning the original unchanged is a failure.',
+      'Output the COMPLETE modified file in one fenced code block, then short bullets of what changed.'
+    );
   }
   if (webMode) {
     lines.push('Use provided search results and any live page extracts; do not invent URLs or prices.');
@@ -290,8 +340,8 @@ function buildChatSystemPrompt(prefs, memory, webMode, codeMode, editMode, mcpSe
   if (memory && memory.enabled) {
     if (memory.reference) {
       if (memory.retrieved) {
-        lines.push('--- Retrieved agent memory (use while performing the task) ---');
-        lines.push('Prefer these facts when they conflict with generic assumptions.');
+        lines.push('--- Retrieved agent memory (LEARN FROM THIS while performing the task) ---');
+        lines.push('Prefer these facts when they conflict with generic assumptions. Treat them as prior experience.');
         lines.push(String(memory.reference).slice(0, REF_CHARS));
         lines.push('--- End retrieved memory ---');
       } else {
@@ -301,7 +351,7 @@ function buildChatSystemPrompt(prefs, memory, webMode, codeMode, editMode, mcpSe
       }
     }
     if (memory.user_logs) {
-      lines.push('--- User log ---');
+      lines.push('--- User log (preferences & past outcomes — learn from these) ---');
       lines.push(String(memory.user_logs).slice(0, LOG_CHARS));
     }
   }
@@ -322,29 +372,30 @@ async function resolveMemoryForRequest(token, message, memory) {
   }
 }
 
-async function callOnce(provider, apiKey, modelCfg, messages, maxTokens, webPlugin) {
-  var body = { model: modelCfg.model, messages: messages, max_tokens: maxTokens };
-  if (webPlugin && provider.id === 'openrouter') body.plugins = [{ id: 'web', max_results: 5 }];
+async function callOnce(provider, apiKey, modelCfg, messages, maxTokens, opts) {
+  opts = opts || {};
+  var body = buildRequestBody(provider, modelCfg, messages, maxTokens, opts);
   if (llmStream && llmStream.completeOnce) {
-    return llmStream.completeOnce(provider.url, authHeaders(provider, apiKey), body, 90000);
+    return llmStream.completeOnce(provider.url, authHeaders(provider, apiKey), body, 120000);
   }
   var resp = await fetch(provider.url, {
     method: 'POST', headers: authHeaders(provider, apiKey),
-    body: JSON.stringify(body), signal: AbortSignal.timeout(90000)
+    body: JSON.stringify(body), signal: AbortSignal.timeout(120000)
   });
   if (!resp.ok) { var err = new Error('HTTP ' + resp.status); err.status = resp.status; throw err; }
   var data = await resp.json();
   var choice = data && data.choices && data.choices[0];
   var msg = choice && choice.message;
   var text = msg && typeof msg.content === 'string' ? msg.content.trim() : '';
+  // Some Zhipu responses put thinking separately — content is still the answer
   var finishReason = (choice && (choice.finish_reason || choice.native_finish_reason)) || '';
   return { text: text, finishReason: String(finishReason || '').toLowerCase() };
 }
 
-async function generateWithContinuation(provider, apiKey, modelCfg, system, prior, userContent, maxTokens, webPlugin, onDelta) {
+async function generateWithContinuation(provider, apiKey, modelCfg, system, prior, userContent, maxTokens, opts, onDelta) {
+  opts = opts || {};
   var messages = [{ role: 'system', content: system }].concat(prior || []).concat([{ role: 'user', content: userContent }]);
-  var body = { model: modelCfg.model, messages: messages, max_tokens: maxTokens };
-  if (webPlugin && provider.id === 'openrouter') body.plugins = [{ id: 'web', max_results: 5 }];
+  var body = buildRequestBody(provider, modelCfg, messages, maxTokens, opts);
 
   var first;
   if (onDelta && llmStream && llmStream.streamOnce) {
@@ -352,15 +403,14 @@ async function generateWithContinuation(provider, apiKey, modelCfg, system, prio
       first = await llmStream.streamOnce(
         provider.url, authHeaders(provider, apiKey), body,
         function (delta, full) { onDelta(delta, full); },
-        90000
+        120000
       );
     } catch (streamErr) {
-      // Stream failed — fall back to non-stream so the turn still completes (no wasted empty UI)
-      first = await callOnce(provider, apiKey, modelCfg, messages, maxTokens, webPlugin);
+      first = await callOnce(provider, apiKey, modelCfg, messages, maxTokens, opts);
       if (first.text && onDelta) onDelta(first.text, first.text);
     }
   } else {
-    first = await callOnce(provider, apiKey, modelCfg, messages, maxTokens, webPlugin);
+    first = await callOnce(provider, apiKey, modelCfg, messages, maxTokens, opts);
     if (first.text && onDelta) onDelta(first.text, first.text);
   }
 
@@ -369,17 +419,15 @@ async function generateWithContinuation(provider, apiKey, modelCfg, system, prio
   var full = first.text;
   var finish = first.finishReason;
   var cont = 0;
-  // Auto-continue incomplete outputs so users do not re-ask (wastes provider quota)
   while (cont < MAX_CONTINUATIONS && looksTruncated(full, finish)) {
     cont++;
     var contMessages = messages.concat([
       { role: 'assistant', content: full },
       { role: 'user', content: 'Continue exactly from where you left off. Do not repeat prior text. Close open code fences. Finish the complete answer.' }
     ]);
-    var next = await callOnce(provider, apiKey, modelCfg, contMessages, maxTokens, false);
+    var next = await callOnce(provider, apiKey, modelCfg, contMessages, maxTokens, Object.assign({}, opts, { webPlugin: false }));
     if (!next.text) break;
     var piece = next.text;
-    // Avoid obvious overlap waste
     if (full.endsWith(piece.slice(0, Math.min(40, piece.length)))) {
       piece = piece.slice(Math.min(40, piece.length));
     }
@@ -406,7 +454,7 @@ async function prepareUserContent(message, opts) {
     var searchNote = search.note || '';
     searchHitCount = (search.urls && search.urls.length) || 0;
     if (searchNote) {
-      userContent = message + '\n\n---\n' + searchNote + '\n---\nUse the search results. Cite links in Markdown.';
+      userContent = message + '\n\n---\n' + searchNote + '\n---\nUse the search results while solving. Cite links in Markdown.';
     } else {
       userContent = message +
         '\n\n---\n[Server status] Canton Node ran web search for this turn; SERP returned 0 parseable hits (provider empty or blocked).\n' +
@@ -415,11 +463,11 @@ async function prepareUserContent(message, opts) {
     }
     var canDeep = kernelLib && typeof kernelLib.deepReadUrls === 'function' && kernelLib.kernelKey && kernelLib.kernelKey();
     if (canDeep && search.urls && search.urls.length) {
-      var maxPages = wantsDeepWeb(message) ? 2 : 1;
+      var maxPages = wantsDeepWeb(message) || isCodeTask(message) ? 2 : 1;
       try {
         var deep = await kernelLib.deepReadUrls(search.urls, maxPages);
         if (deep && deep.ok && deep.text) {
-          userContent += '\n\n---\n' + deep.text + '\n---\nPrefer these live extracts for facts.';
+          userContent += '\n\n---\n' + deep.text + '\n---\nPrefer these live extracts for APIs, versions, and facts while coding.';
           deepUsed = true;
         }
       } catch (deepErr) {
@@ -447,11 +495,12 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
   var webMode = !!opts.web;
   var codeMode = !!opts.code || !!opts.edit || isCodeTask(message) || isEditTask(message);
   var editMode = !!opts.edit || isEditTask(message);
+  var complex = isComplexTask(message);
   var mcpServers = opts.mcpServers || [];
   var mcpTools = opts.mcpTools || [];
   var onDelta = typeof opts.onDelta === 'function' ? opts.onDelta : null;
   var attempts = [];
-  var prior = (history || []).slice(-8);
+  var prior = (history || []).slice(-10);
   var maxTokens = codeMode ? MAX_TOKENS_CODE : (webMode ? MAX_TOKENS_WEB : MAX_TOKENS_CHAT);
 
   var prep = await prepareUserContent(message, { web: webMode, mcpServers: mcpServers, mcpTools: mcpTools });
@@ -461,6 +510,12 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
 
   var system = buildChatSystemPrompt(prefs || {}, memory || null, webMode, codeMode, editMode, mcpServers, mcpTools);
   var chain = orderedLlmChain(prefs || {});
+  var callOpts = {
+    webPlugin: webMode,
+    codeMode: codeMode,
+    complex: complex
+  };
+
   for (var pi = 0; pi < chain.length; pi++) {
     var provider = chain[pi];
     var apiKey = providerApiKey(provider);
@@ -470,7 +525,7 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
       try {
         var out = await generateWithContinuation(
           provider, apiKey, m, system, prior, userContent, maxTokens,
-          webMode && provider.id === 'openrouter',
+          Object.assign({}, callOpts, { webPlugin: webMode && provider.id === 'openrouter' }),
           onDelta
         );
         if (out.text) {
@@ -557,8 +612,8 @@ module.exports = async function handler(req, res) {
 
     if (attachment && (attachment.dataUrl || attachment.text)) {
       var t0 = Date.now();
-      var analyzed = await analyzeAttachment(message, attachment, history, prefs, function (msg, hist, pr, mem, opts) {
-        return tryGenerateAnswer(msg, hist, pr, mem || memory, opts || { web: false, mcpServers: mcpServers, mcpTools: mcpTools });
+      var analyzed = await analyzeAttachment(message, attachment, history, prefs, function (msg, hist, pr, mem, o) {
+        return tryGenerateAnswer(msg, hist, pr, mem || memory, o || { web: false, mcpServers: mcpServers, mcpTools: mcpTools });
       });
       res.status(200).json({
         ok: true, agent_id: 'analyze', endpoint: 'vision.analyze',
@@ -615,9 +670,9 @@ module.exports = async function handler(req, res) {
     }
 
     if (route.agent_id === 'chat' || route.agent_id === 'web' || route.agent_id === 'analyze') {
-      var useWeb = forceWeb || route.agent_id === 'web' || wantsWeb(message);
+      var useWeb = forceWeb || route.agent_id === 'web' || wantsWeb(message) ||
+        (isCodeTask(message) && codeNeedsWeb(message));
 
-      // ——— SSE streaming path ———
       if (wantStream) {
         res.writeHead(200, {
           'Content-Type': 'text/event-stream; charset=utf-8',
@@ -631,7 +686,8 @@ module.exports = async function handler(req, res) {
           agent_id: useWeb ? 'web' : route.agent_id,
           endpoint: useWeb ? 'web.search' : route.endpoint,
           thinking: route.thinking,
-          reasoning: route.reasoning
+          reasoning: route.reasoning,
+          model_hint: 'GLM-5.2'
         });
         try {
           var genS = await tryGenerateAnswer(message, history, prefs, memory, {
@@ -669,7 +725,6 @@ module.exports = async function handler(req, res) {
         return;
       }
 
-      // ——— JSON (non-stream) path ———
       var gen = await tryGenerateAnswer(message, history, prefs, memory, {
         web: useWeb,
         code: isCodeTask(message),

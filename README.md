@@ -1,25 +1,29 @@
 # Canton Node
 
-Private multi-tool generative hub. Vanilla HTML + Tailwind CDN + plain JS, deployed on Vercel with zero build step.
+**Open-source multi-tool generative hub.** Vanilla HTML + Tailwind CDN + plain JS, deployed on Vercel with zero build step.
 
-The **Master Agent** routes natural-language requests (chat, image, video, music, TTS, code, …) and runs them through resilient fallback chains. Personalization (display name + reply tone) is stored per account and injected into Master chat answers.
+The **Master Agent** routes natural-language requests (chat, image, video, music, TTS, code, file edit, …), streams answers in real time, and can call live tools (web search, page browse, MCP inventory) via **GLM-5.2** `tool_stream`.
 
-**Live:** [canton-node.vercel.app](https://canton-node.vercel.app) · **Repo:** [awesomejoses11-code/Canton-Node](https://github.com/awesomejoses11-code/Canton-Node)
+- **Live demo:** [canton-node.vercel.app](https://canton-node.vercel.app)
+- **Source code:** [github.com/awesomejoses11-code/Canton-Node](https://github.com/awesomejoses11-code/Canton-Node)
 
 ---
 
 ## Features
 
-- **Master Agent router** — heuristic first, then Vinci → OpenRouter → Hugging Face
+- **Master Agent** — chat, web, code, file edit, media routing
+- **SSE streaming** — progressive tokens for all standard LLM paths (including file attachments)
+- **GLM-5.2 primary** — deep thinking, high output limits, native tools (`web_search`, `browse_url`, `list_connected_mcps`)
+- **Tool streaming** — `tool_stream=true` on Zhipu; agentic loop up to 3 tool rounds
 - **Media chains**
   - Image: Hugging Face FLUX → Prexzy
   - Video: MuAPI → Pixazo → Pyramid Flow → Prexzy
   - Music / TTS: Prexzy endpoints via Execute
-- **Personalization** — display name + Master tone (friendly / professional / concise / technical / playful)
-- **Session memory** — last turns sent with each chat request
-- **Edit prompt / Regenerate / Copy** under assistant replies
-- **Per-user daily quotas** (localStorage, midnight reset)
-- **Chat history drawer** — local sessions per account
+- **MCP** — connect servers; inventory injected into every prompt; client Execute for tool calls
+- **Kernel stealth browse** — optional live page extract when `KERNEL_API_KEY` is set
+- **Vector / reference memory** — learn from docs and user logs while working
+- **Personalization** — display name + reply tone
+- **Session history** — local + optional server sync
 
 ---
 
@@ -27,25 +31,20 @@ The **Master Agent** routes natural-language requests (chat, image, video, music
 
 ```
 /
-├── index.html              # Auth + Agents / Limits / Settings
-├── favicon.svg
-├── vercel.json
+├── index.html
 ├── api/
-│   ├── master.js           # Router + chat; accepts prefs { displayName, tone }
-│   ├── image.js            # HF FLUX → Prexzy
-│   ├── video.js            # MuAPI → Pixazo → Pyramid → Prexzy
-│   ├── video-status.js     # Async video poll helper
-│   └── log.js
+│   ├── master.js           # Router + GLM-5.2 agent loop + SSE
+│   ├── image.js / video.js # Media chains
+│   └── …
+├── lib/
+│   ├── llm-stream.js       # SSE parser + tool_calls assembly
+│   ├── master-tools.js     # web_search / browse_url / list_connected_mcps
+│   ├── analyze-attachment.js
+│   ├── kernel-lib.js
+│   └── memory-index.js
 ├── js/
-│   ├── quota.js
-│   ├── auth.js
-│   ├── settings.js         # Theme, accent, displayName, tone, defaults
-│   ├── api.js              # PrexzyAPI (image/video/music/tts)
-│   ├── history.js
-│   ├── output-actions.js   # Copy / Edit prompt / Regenerate / media download
-│   ├── master-client.js    # Master UI + Execute + prefs payload
-│   ├── hub.js
-│   └── prexzy-shim.js
+│   ├── master-client.js    # UI + SSE consumer
+│   └── …
 └── README.md
 ```
 
@@ -55,39 +54,27 @@ The **Master Agent** routes natural-language requests (chat, image, video, music
 
 | Variable | Purpose |
 |----------|---------|
-| `VINCI_API_KEY` | Primary chat / route LLM (OpenAI-compatible) |
-| `OPENROUTER_API_KEY` | Fallback free models |
-| `HF_TOKEN` | Hugging Face (chat fallback + FLUX images) |
-| `MUAPI_API_KEY` | Primary video generation |
-| `PIXAZO_API_KEY` | Video fallback |
-| Optional Prexzy / Pyramid keys | Final media fallbacks |
+| `ZAI_API_KEY` / `ZHIPU_API_KEY` | **Primary** chat (GLM-5.2) |
+| `VINCI_API_KEY` | Chat fallback |
+| `OPENROUTER_API_KEY` | Free model fallback + vision |
+| `HF_TOKEN` | HF chat + FLUX images |
+| `KERNEL_API_KEY` | Stealth page browse |
+| `MUAPI_API_KEY` / `PIXAZO_API_KEY` | Video |
+| Database URL (if used) | Auth / memory |
 
-Set them in the Vercel project → Settings → Environment Variables, then redeploy.
-
----
-
-## Personalization
-
-Open **Settings** after sign-in:
-
-1. **Display Name** — Master addresses you by this name in chat.
-2. **Master Agent Tone** — shapes how answers are written:
-   - Friendly · Professional · Concise · Technical · Playful
-
-Saved per account on the device (`localStorage`). Each Master chat request sends `prefs: { displayName, tone }` to `/api/master`, which appends persona instructions to the system prompt.
-
-Other settings: theme, accent, default image size, TTS voice, code language, confirm heavy calls, routing mode.
+Set in Vercel → Project → Settings → Environment Variables, then redeploy.
 
 ---
 
 ## How Master works
 
 ```
-You type a request
-  → heuristic route (image / video / music / capabilities / …)
-  → else LLM route (Vinci → OpenRouter → HF)
-  → chat/web: answer on server (with name + tone + history)
-  → media tools: route card → press ▶ Execute → tool runs (quota)
+You type (or attach a file)
+  → client always requests stream: true
+  → heuristic route (media / browse / web / chat)
+  → GLM-5.2 streams tokens (and tool calls when needed)
+  → tools run server-side → model continues → final answer
+  → media tools: route card → ▶ Execute
 ```
 
 Under every reply: **Copy** · **Edit prompt** · **Regenerate**.
@@ -99,28 +86,33 @@ Under every reply: **Copy** · **Edit prompt** · **Regenerate**.
 Static site + serverless `api/*`. No build step.
 
 ```bash
-# optional local check
+git clone https://github.com/awesomejoses11-code/Canton-Node.git
+cd Canton-Node
+# optional local static check
 npx serve .
-# or link the repo to Vercel and deploy
+# deploy: link the repo to Vercel
 ```
-
----
-
-## Quotas (default daily)
-
-| Feature | Limit |
-|---------|------:|
-| Master routing | 80 |
-| Image | 12 |
-| Video | 4 |
-| Music | 8 |
-| TTS | 50 |
-| Code | 50 |
-
-Shown and enforced on the **Limits** tab.
 
 ---
 
 ## License
 
-Private build — use and modify for your own deployment.
+Released as **open source**. You are free to use, modify, and deploy your own instance.
+
+If you ship a public fork, a link back to [awesomejoses11-code/Canton-Node](https://github.com/awesomejoses11-code/Canton-Node) is appreciated.
+
+```
+MIT License — Copyright (c) 2026 Canton Node contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+```

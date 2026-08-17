@@ -22,7 +22,7 @@
         reader.onload = function () {
           resolve({
             name: file.name, type: file.type || 'text/plain', kind: 'text',
-            text: String(reader.result || '').slice(0, 120000)
+            text: String(reader.result || '').slice(0, 200000)
           });
         };
         reader.readAsText(file);
@@ -378,7 +378,6 @@
     });
   }
 
-  /** Read SSE from /api/master and invoke handlers. */
   async function consumeSse(response, handlers) {
     handlers = handlers || {};
     var reader = response.body && response.body.getReader ? response.body.getReader() : null;
@@ -475,16 +474,25 @@
           textBits.push('--- ' + attachments[bi].name + ' ---\n' + attachments[bi].text);
         }
       }
-      if (textBits.length) message = message + '\n\n' + textBits.join('\n\n');
-      attachment = imageAtt || attachments[0] || null;
+      // Prefer structured attachment for text edits (server streams file-edit path).
+      // Still include text in message as context for multi-file.
+      if (textBits.length && !imageAtt) {
+        attachment = attachments.find(function (a) { return a.kind === 'text'; }) || attachments[0] || null;
+        if (attachments.length > 1) message = message + '\n\n' + textBits.slice(1).join('\n\n');
+      } else if (textBits.length) {
+        message = message + '\n\n' + textBits.join('\n\n');
+        attachment = imageAtt || attachments[0] || null;
+      } else {
+        attachment = imageAtt || attachments[0] || null;
+      }
     } catch (attErr) {
       assistantBox.textContent = String(attErr && attErr.message ? attErr.message : attErr);
       if (runBtn) runBtn.disabled = false;
       return;
     }
 
-    // Streaming only for pure chat (no image attachment analysis)
-    var useStream = !attachment || attachment.kind !== 'image';
+    // Streaming is mandatory for all standard LLM paths (chat, code, file edit, analyze).
+    var useStream = true;
 
     var memory = await loadMemoryForRequest();
     var body = {
@@ -503,7 +511,7 @@
     try {
       var res = await fetch('/api/master', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: useStream ? 'text/event-stream, application/json' : 'application/json' },
+        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream, application/json' },
         body: JSON.stringify(body)
       });
 
@@ -525,7 +533,6 @@
           var now = Date.now();
           if (!force && now - lastPaint < 48) return;
           lastPaint = now;
-          // Progressive: plain text during stream for speed; full markdown on done
           answer.textContent = accumulated;
           var thread = el('master-thread');
           if (thread) thread.scrollTop = thread.scrollHeight;
@@ -582,7 +589,6 @@
         return;
       }
 
-      // JSON fallback (attachments / non-stream routes)
       var data = await res.json().catch(function () { return null; });
       if (!res.ok || !data) {
         assistantBox.textContent = (data && data.error) ? data.error : ('Request failed (' + res.status + ')');
@@ -736,7 +742,7 @@
     var attach = el('master-attach');
     var fileInput = el('master-file-input');
     if (attach && fileInput) {
-      fileInput.setAttribute('accept', 'image/*,image/jpeg,image/png,image/webp,image/gif,application/pdf,text/*,.md,.csv,.json,.txt');
+      fileInput.setAttribute('accept', 'image/*,image/jpeg,image/png,image/webp,image/gif,application/pdf,text/*,.md,.csv,.json,.txt,.py,.js,.ts');
       fileInput.setAttribute('multiple', 'multiple');
       fileInput.multiple = true;
       fileInput.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;';

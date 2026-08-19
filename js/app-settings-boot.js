@@ -157,10 +157,96 @@ document.getElementById('mcp-save-btn').addEventListener('click', async function
   document.getElementById('mcp-name').value = ''; document.getElementById('mcp-url').value = ''; document.getElementById('mcp-auth').value = '';
   renderMcpList();
 });
+
+/* ——— Google Identity Services ——— */
+function loadGsiScript() {
+  return new Promise(function (resolve, reject) {
+    if (window.google && google.accounts && google.accounts.id) return resolve();
+    var existing = document.querySelector('script[data-gsi]');
+    if (existing) {
+      existing.addEventListener('load', function () { resolve(); });
+      existing.addEventListener('error', function () { reject(new Error('GSI load failed')); });
+      return;
+    }
+    var s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client';
+    s.async = true;
+    s.defer = true;
+    s.setAttribute('data-gsi', '1');
+    s.onload = function () { resolve(); };
+    s.onerror = function () { reject(new Error('Could not load Google script')); };
+    document.head.appendChild(s);
+  });
+}
+
+async function handleGoogleCredential(response) {
+  try {
+    showAuthError('');
+    var rememberEl = document.getElementById('auth-remember');
+    var remember = rememberEl ? !!rememberEl.checked : true;
+    var user = await Auth.google(response.credential, remember);
+    await enterApp(user);
+  } catch (err) {
+    showAuthError(err && err.message ? err.message : String(err));
+  }
+}
+
+function injectGoogleButton(clientId) {
+  var form = document.getElementById('auth-form');
+  if (!form || document.getElementById('google-signin-wrap')) return;
+
+  var wrap = document.createElement('div');
+  wrap.id = 'google-signin-wrap';
+  wrap.className = 'mt-4 space-y-3';
+  wrap.innerHTML =
+    '<div class="relative flex items-center gap-2">' +
+    '<div class="flex-1 h-px bg-slate-200 dark:bg-slate-600"></div>' +
+    '<span class="text-[11px] uppercase tracking-wide text-slate-400">or</span>' +
+    '<div class="flex-1 h-px bg-slate-200 dark:bg-slate-600"></div>' +
+    '</div>' +
+    '<div id="google-btn-host" class="flex justify-center min-h-[40px]"></div>';
+
+  // Insert after the form (sibling), still inside auth card if possible
+  if (form.parentNode) form.parentNode.insertBefore(wrap, form.nextSibling);
+  else form.appendChild(wrap);
+
+  try {
+    google.accounts.id.initialize({
+      client_id: clientId,
+      callback: handleGoogleCredential,
+      auto_select: false,
+      cancel_on_tap_outside: true
+    });
+    google.accounts.id.renderButton(document.getElementById('google-btn-host'), {
+      theme: 'outline',
+      size: 'large',
+      text: 'continue_with',
+      shape: 'rectangular',
+      width: 320
+    });
+  } catch (e) {
+    console.warn('[google]', e);
+    wrap.remove();
+  }
+}
+
+async function setupGoogleSignIn() {
+  if (!window.Auth || !Auth.fetchGoogleConfig) return;
+  try {
+    var cfg = await Auth.fetchGoogleConfig();
+    if (!cfg.googleEnabled || !cfg.googleClientId) return;
+    await loadGsiScript();
+    injectGoogleButton(cfg.googleClientId);
+  } catch (e) {
+    console.warn('[google setup]', e);
+  }
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   try { if (Auth.refresh) await Auth.refresh(); } catch (_) {}
   const user = Auth.current();
   Settings.applyAll(Settings.load((user || {}).email));
   if (user) await enterApp(user);
+  else await setupGoogleSignIn();
   switchTab('models');
 });

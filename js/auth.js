@@ -1,12 +1,9 @@
 /* =========================================================================
- * auth.js — Server-first auth (Neon) with localStorage fallback
+ * auth.js — Server-first auth (Neon) with localStorage fallback + Google
  *
  * Priority:
- *   1. /api/auth  action=register|login|me  (cross-device via Neon)
+ *   1. /api/auth  action=register|login|me|google|config
  *   2. localStorage users (private device gate if DB unavailable)
- *
- * Session shape (both stores):
- *   { email, username, token?, issuedAt, expiresAt|null }
  * ========================================================================= */
 
 (function (global) {
@@ -85,7 +82,6 @@
       if (!username) throw new Error('Pick a user name.');
       if (String(password).length < 6) throw new Error('Password must be at least 6 characters.');
 
-      // Prefer Neon
       try {
         const { res, data } = await serverAuth('register', {
           email: email, username: username, password: password
@@ -93,11 +89,9 @@
         if (res.ok && data && data.ok && data.user) {
           return this._startSession(data.user, remember, data.token, data.expiresAt);
         }
-        // 409 / 400 with message — surface to UI (don't fall back silently)
         if (data && data.error && data.code !== 'no_db') {
           throw new Error(data.error);
         }
-        // no_db or network → fall through to local
       } catch (err) {
         if (err && err.message && !/fetch|network|Failed to fetch|no_db/i.test(err.message) &&
             !/DATABASE_URL/i.test(err.message)) {
@@ -105,7 +99,6 @@
         }
       }
 
-      // Local fallback
       const users = readUsers();
       if (users[email]) throw new Error('An account with this email already exists. Sign in instead.');
       const salt = makeSalt();
@@ -144,6 +137,31 @@
       return this._startSession(user, remember, null, null);
     },
 
+    /** Sign in / sign up with a Google Identity Services credential (JWT). */
+    async google(idToken, remember) {
+      idToken = String(idToken || '').trim();
+      if (!idToken) throw new Error('Missing Google credential.');
+      const { res, data } = await serverAuth('google', { idToken: idToken });
+      if (res.ok && data && data.ok && data.user) {
+        return this._startSession(data.user, remember !== false, data.token, data.expiresAt);
+      }
+      throw new Error((data && data.error) || 'Google sign-in failed.');
+    },
+
+    /** Public config from server (GOOGLE_CLIENT_ID). */
+    async fetchGoogleConfig() {
+      try {
+        const { res, data } = await serverAuth('config', {});
+        if (res.ok && data && data.ok) {
+          return {
+            googleClientId: data.googleClientId || null,
+            googleEnabled: !!data.googleEnabled
+          };
+        }
+      } catch (_) {}
+      return { googleClientId: null, googleEnabled: false };
+    },
+
     logout() { clearSession(); },
 
     current() {
@@ -152,7 +170,6 @@
       return { email: s.email, username: s.username, token: s.token || null };
     },
 
-    /** Optional: refresh server session when a token exists */
     async refresh() {
       const s = readSession();
       if (!s || !s.token) return this.current();

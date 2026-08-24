@@ -1,6 +1,23 @@
 /* app-settings-boot.js - loaded by index.html */
 const TAB_ACTIVE = 'tab-btn px-3 py-1.5 rounded-lg bg-white dark:bg-slate-700 shadow-sm text-slate-800 dark:text-slate-100 font-semibold';
 const TAB_INACTIVE = 'tab-btn px-3 py-1.5 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-100';
+const GITHUB_DOCS = 'https://github.com/awesomejoses11-code/Canton-Node';
+
+function injectDocsLink() {
+  if (document.getElementById('canton-docs-link')) return;
+  var logout = document.getElementById('btn-logout');
+  if (!logout || !logout.parentNode) return;
+  var a = document.createElement('a');
+  a.id = 'canton-docs-link';
+  a.href = GITHUB_DOCS;
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  a.textContent = 'Docs';
+  a.title = 'Canton Node documentation & source on GitHub';
+  a.className = 'text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800';
+  logout.parentNode.insertBefore(a, logout);
+}
+
 function switchTab(activeTab) {
   ['models', 'limits', 'settings'].forEach(tab => {
     document.getElementById('tab-btn-' + tab).className = tab === activeTab ? TAB_ACTIVE : TAB_INACTIVE;
@@ -62,6 +79,7 @@ async function enterApp(user) {
   if (window.renderMcpList) window.renderMcpList();
   document.getElementById('auth-view').classList.add('hidden');
   document.getElementById('app-view').classList.remove('hidden');
+  injectDocsLink();
   switchTab('models');
 }
 document.getElementById('auth-form').addEventListener('submit', async (e) => {
@@ -158,7 +176,6 @@ document.getElementById('mcp-save-btn').addEventListener('click', async function
   renderMcpList();
 });
 
-/* ——— Google Identity Services ——— */
 function loadGsiScript() {
   return new Promise(function (resolve, reject) {
     if (window.google && google.accounts && google.accounts.id) return resolve();
@@ -206,7 +223,6 @@ function injectGoogleButton(clientId) {
     '</div>' +
     '<div id="google-btn-host" class="flex justify-center min-h-[40px]"></div>';
 
-  // Insert after the form (sibling), still inside auth card if possible
   if (form.parentNode) form.parentNode.insertBefore(wrap, form.nextSibling);
   else form.appendChild(wrap);
 
@@ -248,5 +264,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   Settings.applyAll(Settings.load((user || {}).email));
   if (user) await enterApp(user);
   else await setupGoogleSignIn();
+  injectDocsLink();
   switchTab('models');
 });

@@ -169,7 +169,9 @@ function buildThinking(message, route) {
 
 function wantsWeb(message) {
   var m = String(message || '').toLowerCase();
-  return /\b(web search|search the web|google|look up|lookup|latest|current|news|price of|coingecko|research|does .+ have|is there an?|official (docs?|site)|mcp server|kernel mcp|use (the )?web|use (the )?kernel)\b/.test(m);
+  return /\b(web search|search the web|google|look up|lookup|latest|current|news|price of|coingecko|research|does .+ have|is there an?|official (docs?|site)|mcp server|kernel mcp|use (the )?web|use (the )?kernel)\b/.test(m)
+    || /\b(details? (of|on|about)|what is|what's|tell me about|overview of|explain|info on|information (on|about))\b/.test(m)
+    || /\b(blockchain|network|protocol|tokenomics|mainnet|testnet|airdrop|ecosystem)\b/.test(m);
 }
 
 function codeNeedsWeb(message) {
@@ -205,12 +207,15 @@ function isComplexTask(message) {
 
 function looksTruncated(text, finishReason) {
   if (llmStream && typeof llmStream.looksIncomplete === 'function') {
-    return llmStream.looksIncomplete(text, finishReason);
+    if (llmStream.looksIncomplete(text, finishReason)) return true;
   }
-  if (finishReason === 'length' || finishReason === 'max_tokens') return true;
+  if (finishReason === 'length' || finishReason === 'max_tokens' || finishReason === 'tool_calls') return true;
   var s = String(text || '').trim();
   if (!s) return false;
-  return ((s.match(/```/g) || []).length % 2 === 1);
+  if (((s.match(/```/g) || []).length % 2 === 1)) return true;
+  if (/\bweb_search\s*[:\(]/i.test(s)) return true;
+  if (/\bI(?:'ll| will) (?:fetch|search|look up|pull up|browse)\b/i.test(s) && s.length < 400) return true;
+  return false;
 }
 
 function sanitizeCapabilityDenial(text) {
@@ -228,6 +233,7 @@ function sanitizeCapabilityDenial(text) {
     /I don'?t want to give you fabricated URLs[^.\n]*[.\n]/gi
   ];
   for (var i = 0; i < patterns.length; i++) s = s.replace(patterns[i], '');
+  if (masterTools && masterTools.stripToolLeakage) s = masterTools.stripToolLeakage(s);
   return s.replace(/\n{3,}/g, '\n\n').trim();
 }
 
@@ -314,11 +320,12 @@ function buildChatSystemPrompt(prefs, memory, webMode, codeMode, editMode, mcpSe
   ];
   if (toolsEnabled) {
     lines.push(
-      'TOOLS (call when useful — do not invent results):',
-      '- web_search: live web SERP for docs, APIs, prices, news.',
+      'TOOLS (structured function calls only — never write tool names in the user-facing answer):',
+      '- web_search: live web SERP for docs, APIs, prices, news, project details.',
       '- browse_url: read a specific https page (stealth when available).',
       '- list_connected_mcps: list user MCP servers/tools for this session.',
-      'After tool results arrive, synthesize a final answer. Do not stop after only calling tools.'
+      'After tool results arrive, synthesize a complete final answer with citations.',
+      'FORBIDDEN in final answers: lines like web_search: "…" or "I will search now". Deliver facts instead.'
     );
   }
   if (codeMode) {
@@ -441,9 +448,26 @@ async function generateWithContinuation(provider, apiKey, modelCfg, system, prio
       if (turn.text && onDelta) onDelta(turn.text, turn.text, {});
     }
 
-    var toolCalls = (turn.toolCalls && turn.toolCalls.length) ? turn.toolCalls : [];
+    var toolCalls = (turn.toolCalls && turn.toolCalls.length) ? turn.toolCalls.slice() : [];
     finish = turn.finishReason || '';
-    if (turn.text) full = (full ? full + (full.endsWith('\n') ? '' : '\n') : '') + turn.text;
+
+    if (enableTools && masterTools && masterTools.parseTextualToolCalls && toolRounds < MAX_TOOL_ROUNDS) {
+      var textCalls = masterTools.parseTextualToolCalls(turn.text || '');
+      if (textCalls.length) {
+        var have = {};
+        toolCalls.forEach(function (tc) { have[(tc.function && tc.function.name) || ''] = true; });
+        textCalls.forEach(function (tc) {
+          var n = (tc.function && tc.function.name) || '';
+          if (!have[n]) toolCalls.push(tc);
+        });
+      }
+    }
+
+    if (turn.text) {
+      var pieceText = turn.text;
+      if (masterTools && masterTools.stripToolLeakage) pieceText = masterTools.stripToolLeakage(pieceText);
+      if (pieceText) full = (full ? full + (full.endsWith('\n') ? '' : '\n') : '') + pieceText;
+    }
 
     if (enableTools && toolCalls.length && toolRounds < MAX_TOOL_ROUNDS && masterTools) {
       toolRounds++;
@@ -452,7 +476,7 @@ async function generateWithContinuation(provider, apiKey, modelCfg, system, prio
         var names = toolCalls.map(function (t) {
           return (t.function && t.function.name) || 'tool';
         }).join(', ');
-        onDelta('\n\n_🔧 Using tools: ' + names + '_\n\n', full + '\n\n_🔧 Using tools: ' + names + '_\n\n', { toolProgress: true });
+        onDelta('\n\n_🔧 Using tools: ' + names + '_\n\n', (full || '') + '\n\n_🔧 Using tools: ' + names + '_\n\n', { toolProgress: true });
       }
       messages.push({
         role: 'assistant',
@@ -461,6 +485,11 @@ async function generateWithContinuation(provider, apiKey, modelCfg, system, prio
       });
       var toolMsgs = await masterTools.runToolCalls(toolCalls, toolCtx);
       for (var ti = 0; ti < toolMsgs.length; ti++) messages.push(toolMsgs[ti]);
+      messages.push({
+        role: 'user',
+        content: 'Tool results are above. Answer the user fully in Markdown with citations. Do NOT write tool names like web_search as text. Do not say you will search — deliver the facts.'
+      });
+      full = '';
       continue;
     }
 
@@ -473,7 +502,7 @@ async function generateWithContinuation(provider, apiKey, modelCfg, system, prio
       cont++;
       var contMessages = messages.concat([
         { role: 'assistant', content: full },
-        { role: 'user', content: 'Continue exactly from where you left off. Do not repeat prior text. Close open code fences. Finish the complete answer.' }
+        { role: 'user', content: 'Continue exactly from where you left off. Do not repeat prior text. Close open code fences. Finish the complete answer. Do not write web_search as text.' }
       ]);
       var next = await callOnce(provider, apiKey, modelCfg, contMessages, maxTokens, {
         codeMode: opts.codeMode,
@@ -482,6 +511,7 @@ async function generateWithContinuation(provider, apiKey, modelCfg, system, prio
       });
       if (!next.text) break;
       var piece = next.text;
+      if (masterTools && masterTools.stripToolLeakage) piece = masterTools.stripToolLeakage(piece);
       if (full.endsWith(piece.slice(0, Math.min(40, piece.length)))) {
         piece = piece.slice(Math.min(40, piece.length));
       }
@@ -494,6 +524,7 @@ async function generateWithContinuation(provider, apiKey, modelCfg, system, prio
     break;
   }
 
+  if (masterTools && masterTools.stripToolLeakage) full = masterTools.stripToolLeakage(full);
   return {
     text: full,
     finishReason: finish,
@@ -538,7 +569,7 @@ async function prepareUserContent(message, opts) {
     }
   } else if (useNativeTools) {
     userContent = message +
-      '\n\n(You have tools: web_search, browse_url, list_connected_mcps. Call them when live data is needed.)';
+      '\n\n(You have tools: web_search, browse_url, list_connected_mcps. Call them with structured tool calls when live data is needed. Never write web_search as plain text in the answer.)';
   }
 
   if (wantsMcpList(message) || mcpServers.length || mcpTools.length) {
@@ -638,6 +669,14 @@ async function tryGenerateAnswer(message, history, prefs, memory, opts) {
   };
 }
 
+// Bulletproof: recovery if model only narrated tools; keep wantsWeb expanded above
+try {
+  var patches = require('../lib/master-patches');
+  tryGenerateAnswer = patches.wrapTryGenerate(tryGenerateAnswer);
+} catch (patchErr) {
+  console.error('[master] patches', patchErr && patchErr.message);
+}
+
 function sseWrite(res, event, data) {
   res.write('event: ' + event + '\n');
   res.write('data: ' + JSON.stringify(data) + '\n\n');
@@ -661,7 +700,7 @@ module.exports = async function handler(req, res) {
     var prefs = (body.prefs && typeof body.prefs === 'object') ? body.prefs : {};
     var memory = (body.memory && typeof body.memory === 'object') ? body.memory : null;
     var token = String(body.token || '').trim();
-    var wantStream = body.stream !== false; // streaming ON by default for LLM paths
+    var wantStream = body.stream !== false;
     var mcpTools = normalizeMcpTools(body.mcp_tools);
     var mcpServers = normalizeMcpServers(body.mcp_servers);
     if (!mcpServers.length && mcpTools.length) {
@@ -698,7 +737,6 @@ module.exports = async function handler(req, res) {
 
     memory = await resolveMemoryForRequest(token, message, memory);
 
-    // ——— Attachment / file-edit (LLM path — stream when requested) ———
     if (attachment && (attachment.dataUrl || attachment.text)) {
       var t0 = Date.now();
       var attachThinking =
